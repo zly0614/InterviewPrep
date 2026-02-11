@@ -1,0 +1,5 @@
+{
+  "name": "Interview Prep AI",
+  "description": "A smart interview question recorder that allows users to note down questions and generate professional answers using AI with real-time web search grounding.",
+  "requestFramePermissions": []
+}
