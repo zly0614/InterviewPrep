@@ -1,7 +1,18 @@
+
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import * as XLSX from 'xlsx';
-import { AppView, Question, QuestionDraft, GroundingChunk, CATEGORIES, CATEGORY_COLORS } from './types';
-import { getQuestions, saveQuestion, deleteQuestion, importQuestions, setSyncDirectory, isSyncEnabled } from './services/storageService';
+import { AppView, Question, QuestionDraft, GroundingChunk, CATEGORY_COLORS, getCategoryColor } from './types';
+import { 
+  getQuestions, 
+  saveQuestion, 
+  deleteQuestion, 
+  importQuestions, 
+  loadInitialDataFromProject,
+  getCategories,
+  saveCategories,
+  renameCategory,
+  removeCategory
+} from './services/storageService';
 import { generateInterviewAnswer, autoCategorize, createAiChatSession } from './services/geminiService';
 import { PlusIcon, ChevronLeftIcon, SparklesIcon, TrashIcon, PencilIcon, DownloadIcon, UploadIcon, SearchIcon, CalendarIcon, BuildingIcon, ExcelIcon, MarkdownIcon } from './components/Icons';
 import { SourceList } from './components/SourceList';
@@ -9,11 +20,11 @@ import { SourceList } from './components/SourceList';
 const App: React.FC = () => {
   const [view, setView] = useState<AppView>(AppView.LIST);
   const [questions, setQuestions] = useState<Question[]>([]);
+  const [categories, setCategories] = useState<string[]>([]);
   const [currentQuestion, setCurrentQuestion] = useState<Question | null>(null);
   const [selectedCategory, setSelectedCategory] = useState<string>('All');
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [dateFilter, setDateFilter] = useState<string>('');
-  const [isSynced, setIsSynced] = useState(false);
   
   const fileInputRef = useRef<HTMLInputElement>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
@@ -30,6 +41,10 @@ const App: React.FC = () => {
   const [isGenerating, setIsGenerating] = useState(false);
   const [isCategorizing, setIsCategorizing] = useState(false);
 
+  // 分类管理状态
+  const [newCatName, setNewCatName] = useState('');
+  const [editingCat, setEditingCat] = useState<{ old: string, current: string } | null>(null);
+
   // AI 聊天状态
   const [chatHistory, setChatHistory] = useState<{ role: 'user' | 'model', text: string }[]>([]);
   const [chatInput, setChatInput] = useState('');
@@ -38,9 +53,17 @@ const App: React.FC = () => {
 
   // 初始化加载
   useEffect(() => {
-    const data = getQuestions();
-    setQuestions(data);
-    setIsSynced(isSyncEnabled());
+    const init = async () => {
+      // 1. 尝试加载项目预设数据
+      const projectData = await loadInitialDataFromProject();
+      if (projectData && projectData.length > 0) {
+        await importQuestions(projectData);
+      }
+      
+      // 2. 刷新视图
+      refreshAll();
+    };
+    init();
   }, []);
 
   // 聊天自动滚动
@@ -48,18 +71,9 @@ const App: React.FC = () => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [chatHistory]);
 
-  const refreshQuestions = () => {
-    const loaded = getQuestions();
-    setQuestions(loaded);
-    setIsSynced(isSyncEnabled());
-  };
-
-  const handleSyncFolder = async () => {
-    const success = await setSyncDirectory();
-    if (success) {
-      setIsSynced(true);
-      alert('已连接本地项目文件夹。之后的所有更改将自动同步到 data/interview_questions.json');
-    }
+  const refreshAll = () => {
+    setQuestions(getQuestions());
+    setCategories(getCategories());
   };
 
   const handleCreateNew = () => {
@@ -78,7 +92,7 @@ const App: React.FC = () => {
       category: q.category || 'Other',
       companyTag: q.companyTag || '',
       isAiGenerated: q.isAiGenerated,
-      sources: q.sources,
+      sources: q.sources || [],
     });
     setChatHistory([]);
     chatSessionRef.current = null;
@@ -94,7 +108,7 @@ const App: React.FC = () => {
     e?.stopPropagation();
     if (confirm('确定要删除这道题吗？')) {
       await deleteQuestion(id);
-      refreshQuestions();
+      refreshAll();
       if (view === AppView.DETAIL) setView(AppView.LIST);
     }
   };
@@ -126,8 +140,41 @@ const App: React.FC = () => {
     };
 
     await saveQuestion(newQuestion);
-    refreshQuestions();
+    refreshAll();
     setView(AppView.LIST);
+  };
+
+  const handleAddCategory = () => {
+    if (!newCatName.trim()) return;
+    if (categories.includes(newCatName.trim())) {
+      alert('分类已存在');
+      return;
+    }
+    const updated = [...categories, newCatName.trim()];
+    saveCategories(updated);
+    setCategories(updated);
+    setNewCatName('');
+  };
+
+  const handleRenameCat = (oldName: string, newName: string) => {
+    if (!newName.trim() || oldName === newName) {
+      setEditingCat(null);
+      return;
+    }
+    renameCategory(oldName, newName);
+    setEditingCat(null);
+    refreshAll();
+  };
+
+  const handleRemoveCat = (name: string) => {
+    if (name === 'Other') {
+      alert('不能删除默认分类 Other');
+      return;
+    }
+    if (confirm(`确定要删除分类 "${name}" 吗？该分类下的题目将自动归为 Other。`)) {
+      removeCategory(name);
+      refreshAll();
+    }
   };
 
   // AI 聊天处理
@@ -145,7 +192,7 @@ const App: React.FC = () => {
 
     try {
       const result = await chatSessionRef.current.sendMessage({ message: userMessage });
-      const modelText = result.text;
+      const modelText = result.text || "No response received.";
       setChatHistory(prev => [...prev, { role: 'model', text: modelText }]);
     } catch (error) {
       setChatHistory(prev => [...prev, { role: 'model', text: "抱歉，我遇到了点问题，请稍后再试。" }]);
@@ -176,360 +223,501 @@ const App: React.FC = () => {
     }
   };
 
-  // --- 导出/导入逻辑 ---
-  const downloadFile = (content: string, fileName: string, contentType: string) => {
-    const blob = new Blob([content], { type: contentType });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = fileName;
-    a.click();
-    URL.revokeObjectURL(url);
-  };
-
-  const getISODate = () => new Date().toISOString().slice(0, 10);
-
-  const handleExportJSON = () => {
-    const data = JSON.stringify(questions, null, 2);
-    downloadFile(data, `面试题备份_${getISODate()}.json`, 'application/json');
-  };
-
   const handleExportExcel = () => {
-    if (questions.length === 0) return alert('没有题目可以导出');
-    const exportData = questions.map(q => ({
-      '题目': q.text,
-      '答案': q.answer,
-      '分类': q.category,
-      '公司标签': q.companyTag,
-      'AI生成': q.isAiGenerated ? '是' : '否',
-      '创建时间': new Date(q.createdAt).toLocaleString(),
-      '来源': q.sources?.map(s => s.web?.uri).join('\n') || ''
-    }));
-    const worksheet = XLSX.utils.json_to_sheet(exportData);
-    const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, worksheet, '题库');
-    XLSX.writeFile(workbook, `面试题集_${getISODate()}.xlsx`);
-  };
-
-  const generateMarkdown = (qs: Question[]) => {
-    let markdown = `# 面试题库导出 - ${new Date().toLocaleDateString()}\n\n`;
-    qs.forEach((q, i) => {
-      markdown += `## ${i + 1}. ${q.text}\n\n`;
-      markdown += `> **分类**: ${q.category} | **公司**: ${q.companyTag || '无'} | **AI生成**: ${q.isAiGenerated ? '是' : '否'}\n\n`;
-      markdown += `### 答案\n\n${q.answer || '_暂无内容_'}\n\n`;
-      if (q.sources && q.sources.length > 0) {
-        markdown += `### 参考链接\n\n`;
-        q.sources.forEach(s => markdown += `- [${s.web?.title || s.web?.uri}](${s.web?.uri})\n`);
-        markdown += `\n`;
-      }
-      markdown += `---\n\n`;
-    });
-    return markdown;
+    const ws = XLSX.utils.json_to_sheet(questions);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Questions");
+    XLSX.writeFile(wb, "interview_questions.xlsx");
   };
 
   const handleExportMarkdown = () => {
-    if (questions.length === 0) return alert('没有题目可以导出');
-    const md = generateMarkdown(questions);
-    downloadFile(md, `面试题全集_${getISODate()}.md`, 'text/markdown');
+    let md = "# Interview Questions\n\n";
+    questions.forEach(q => {
+      md += `## [${q.category}] ${q.text}\n\n`;
+      if (q.companyTag) md += `**Company:** ${q.companyTag}\n\n`;
+      md += `### Answer\n${q.answer}\n\n`;
+      if (q.sources && q.sources.length > 0) {
+        md += `### Sources\n`;
+        q.sources.forEach(s => md += `- [${s.web?.title}](${s.web?.uri})\n`);
+        md += `\n`;
+      }
+      md += `---\n\n`;
+    });
+    const blob = new Blob([md], { type: 'text/markdown' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = "questions.md";
+    a.click();
   };
 
-  const handleImportClick = () => fileInputRef.current?.click();
+  const handleImportClick = () => {
+    fileInputRef.current?.click();
+  };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+
     const reader = new FileReader();
     reader.onload = async (event) => {
       try {
-        const json = event.target?.result as string;
-        const parsed = JSON.parse(json);
-        await importQuestions(parsed);
-        refreshQuestions();
-        alert('导入成功！');
+        const data = event.target?.result;
+        if (file.name.endsWith('.json')) {
+          const parsed = JSON.parse(data as string);
+          await importQuestions(parsed);
+          refreshAll();
+        } else if (file.name.endsWith('.xlsx') || file.name.endsWith('.xls')) {
+          const workbook = XLSX.read(data, { type: 'binary' });
+          const sheetName = workbook.SheetNames[0];
+          const sheet = workbook.Sheets[sheetName];
+          const json = XLSX.utils.sheet_to_json(sheet);
+          await importQuestions(json as Question[]);
+          refreshAll();
+        }
       } catch (err) {
-        alert('导入失败，请确保文件格式正确');
-      } finally {
-        if (fileInputRef.current) fileInputRef.current.value = '';
+        alert('导入失败，请检查文件格式');
       }
     };
-    reader.readAsText(file);
+
+    if (file.name.endsWith('.json')) {
+      reader.readAsText(file);
+    } else {
+      reader.readAsBinaryString(file);
+    }
   };
 
   const filteredQuestions = useMemo(() => {
     return questions.filter(q => {
-      const matchesCategory = selectedCategory === 'All' || q.category === selectedCategory;
-      const query = searchQuery.toLowerCase();
-      const matchesSearch = !searchQuery || 
-        q.text.toLowerCase().includes(query) || 
-        q.answer.toLowerCase().includes(query) || 
-        (q.companyTag && q.companyTag.toLowerCase().includes(query));
-      
-      let matchesDate = true;
-      if (dateFilter) {
-        const filterTime = new Date(dateFilter).setHours(0, 0, 0, 0);
-        const questionTime = new Date(q.createdAt).setHours(0, 0, 0, 0);
-        matchesDate = questionTime === filterTime;
-      }
-      return matchesCategory && matchesSearch && matchesDate;
+      const matchCategory = selectedCategory === 'All' || q.category === selectedCategory;
+      const matchSearch = q.text.toLowerCase().includes(searchQuery.toLowerCase()) || 
+                          (q.companyTag && q.companyTag.toLowerCase().includes(searchQuery.toLowerCase()));
+      const matchDate = !dateFilter || new Date(q.createdAt).toISOString().split('T')[0] === dateFilter;
+      return matchCategory && matchSearch && matchDate;
     });
   }, [questions, selectedCategory, searchQuery, dateFilter]);
 
-  const formatTimestamp = (ts: number) => new Date(ts).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
-
-  // --- 视图渲染 ---
-  const renderList = () => (
-    <div className="pb-24">
-      <header className="bg-white sticky top-0 z-20 shadow-sm">
-        <div className="px-4 pt-4 pb-2 flex items-center justify-between border-b border-slate-50">
-          <div className="flex items-center gap-3">
-            <h1 className="text-xl font-bold text-slate-800">面试<span className="text-indigo-600">小助手</span></h1>
-            <button 
-              onClick={handleSyncFolder}
-              className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-[10px] font-bold transition-all border ${
-                isSynced ? 'bg-emerald-50 text-emerald-600 border-emerald-100' : 'bg-slate-100 text-slate-500 border-slate-200 hover:bg-slate-200'
-              }`}
-            >
-              <div className={`w-1.5 h-1.5 rounded-full ${isSynced ? 'bg-emerald-500' : 'bg-slate-400'}`}></div>
-              {isSynced ? '已同步到本地项目' : '未连接本地项目'}
-            </button>
-          </div>
-          <div className="flex items-center gap-1">
-            <input type="file" ref={fileInputRef} onChange={handleFileChange} accept=".json" className="hidden" />
-            <button onClick={handleImportClick} title="从备份文件导入" className="p-2 text-slate-400 hover:text-indigo-600 hover:bg-slate-50 rounded-full transition-colors"><UploadIcon /></button>
-            <div className="w-px h-4 bg-slate-200 mx-1"></div>
-            <button onClick={handleExportExcel} title="导出为 Excel" className="p-2 text-emerald-500 hover:bg-emerald-50 rounded-full transition-colors"><ExcelIcon /></button>
-            <button onClick={handleExportMarkdown} title="导出为 Markdown" className="p-2 text-indigo-500 hover:bg-indigo-50 rounded-full transition-colors"><MarkdownIcon /></button>
-            <button onClick={handleExportJSON} title="导出 JSON 备份" className="p-2 text-slate-400 hover:text-indigo-600 hover:bg-slate-50 rounded-full transition-colors"><DownloadIcon /></button>
-          </div>
-        </div>
-
-        <div className="px-4 py-2 space-y-2">
-          <div className="flex gap-2">
-            <div className="relative flex-1 group">
-              <SearchIcon className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-              <input 
-                type="text"
-                placeholder="搜索题目、公司或标签..."
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="w-full pl-9 pr-4 py-2 bg-slate-100 border-transparent border focus:bg-white focus:border-indigo-200 focus:ring-4 focus:ring-indigo-50 rounded-xl outline-none transition-all text-sm"
-              />
-            </div>
-            <div className="relative group flex-shrink-0">
-              <input 
-                type="date"
-                value={dateFilter}
-                onChange={(e) => setDateFilter(e.target.value)}
-                className="w-10 h-10 p-2 bg-slate-100 border-transparent border focus:bg-white focus:border-indigo-200 rounded-xl outline-none transition-all text-transparent relative z-10 cursor-pointer"
-              />
-              <div className={`absolute inset-0 flex items-center justify-center pointer-events-none rounded-xl ${dateFilter ? 'text-indigo-600 bg-indigo-50' : 'text-slate-400 bg-slate-100'}`}>
-                <CalendarIcon className="w-4 h-4" />
-              </div>
-            </div>
-          </div>
-        </div>
-        
-        <div className="flex overflow-x-auto no-scrollbar gap-2 px-4 py-3 bg-white border-t border-slate-50">
-          {CATEGORIES.map(cat => (
-            <button
-              key={cat}
-              onClick={() => setSelectedCategory(cat)}
-              className={`whitespace-nowrap px-4 py-1.5 rounded-full text-xs font-semibold transition-all border ${
-                selectedCategory === cat ? 'bg-indigo-600 text-white border-indigo-600 shadow-md' : 'bg-white text-slate-500 border-slate-200'
-              }`}
-            >
-              {cat === 'All' ? '全部' : cat}
-            </button>
-          ))}
-        </div>
-      </header>
-
-      <div className="p-4 space-y-4 max-w-2xl mx-auto">
-        {filteredQuestions.length === 0 ? (
-          <div className="text-center py-20 text-slate-400 px-6">
-            <div className="mb-4 flex justify-center"><SparklesIcon className="w-12 h-12 text-slate-200" /></div>
-            <p className="text-lg font-bold">列表空空如也</p>
-            <p className="text-sm mt-1">记录您的第一道面试题吧</p>
-            <button onClick={handleSyncFolder} className="mt-6 text-xs text-indigo-600 font-bold border-b border-indigo-100 pb-0.5">连接本地项目文件夹以实时保存数据</button>
-          </div>
-        ) : (
-          filteredQuestions.map(q => (
-            <div key={q.id} onClick={() => handleViewDetail(q)} className="bg-white p-5 rounded-2xl shadow-sm border border-slate-100 group active:scale-[0.98] transition-all cursor-pointer hover:shadow-lg relative">
-              <div className="flex justify-between items-start mb-3">
-                <div className="flex flex-wrap gap-2 pr-4">
-                  <span className={`text-[10px] font-bold px-2 py-0.5 rounded-md border uppercase tracking-wider ${CATEGORY_COLORS[q.category || 'Other']}`}>{q.category || 'Other'}</span>
-                  {q.companyTag && <span className="bg-slate-50 text-slate-600 text-[10px] font-bold px-2 py-0.5 rounded-md border border-slate-200 flex items-center gap-1"><BuildingIcon className="w-3 h-3" /> {q.companyTag}</span>}
-                </div>
-                <div className="flex gap-2">
-                   <button 
-                    onClick={(e) => { e.stopPropagation(); handleEdit(q); }} 
-                    className="p-1.5 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-all"
-                    title="编辑"
-                   >
-                     <PencilIcon />
-                   </button>
-                   <button 
-                    onClick={(e) => handleDelete(q.id, e)} 
-                    className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-all"
-                    title="删除"
-                   >
-                     <TrashIcon />
-                   </button>
-                </div>
-              </div>
-              <h3 className="font-bold text-slate-800 line-clamp-2 leading-snug mb-2 pr-12">{q.text}</h3>
-              <p className="text-sm text-slate-500 line-clamp-2">{q.answer || '点击记录答案...'}</p>
-            </div>
-          ))
-        )}
-      </div>
-
-      <button onClick={handleCreateNew} className="fixed bottom-6 right-6 bg-indigo-600 hover:bg-indigo-700 text-white p-4 rounded-2xl shadow-xl z-30 transition-transform active:scale-90"><PlusIcon /></button>
-    </div>
-  );
-
-  const renderDetail = () => {
-    if (!currentQuestion) return null;
-    return (
-      <div className="bg-white min-h-screen flex flex-col">
-        <header className="sticky top-0 bg-white/95 border-b border-slate-100 z-10 px-4 py-3 flex items-center justify-between">
-          <button onClick={() => setView(AppView.LIST)} className="p-2 -ml-2 text-slate-600"><ChevronLeftIcon /></button>
-          <div className="flex gap-1">
-            <button onClick={() => handleEdit(currentQuestion)} className="p-2 text-slate-400 hover:text-indigo-600"><PencilIcon /></button>
-            <button onClick={(e) => handleDelete(currentQuestion.id, e)} className="p-2 text-slate-400 hover:text-red-600"><TrashIcon /></button>
-          </div>
-        </header>
-        <main className="flex-1 p-6 max-w-2xl mx-auto w-full">
-          <div className="flex flex-wrap gap-2 items-center mb-6">
-            <div className={`text-xs font-bold px-3 py-1 rounded-full border ${CATEGORY_COLORS[currentQuestion.category || 'Other']}`}>{currentQuestion.category || 'Other'}</div>
-            {currentQuestion.companyTag && <div className="inline-flex items-center gap-1 text-xs font-bold px-3 py-1 rounded-full border border-slate-200 bg-slate-50 text-slate-600"><BuildingIcon className="w-3.5 h-3.5" /> {currentQuestion.companyTag}</div>}
-          </div>
-          <h1 className="text-2xl font-black text-slate-900 mb-8 leading-tight">{currentQuestion.text}</h1>
-          <div className="bg-slate-50 rounded-3xl p-8 border border-slate-100 mb-8">
-             <div className="prose prose-slate prose-sm max-w-none whitespace-pre-wrap text-slate-700 leading-relaxed font-medium">{currentQuestion.answer || '无内容'}</div>
-             <SourceList sources={currentQuestion.sources || []} />
-          </div>
-          <div className="text-[10px] text-slate-300 font-bold uppercase tracking-widest text-center mt-auto py-8">
-            最后修改: {new Date(currentQuestion.updatedAt).toLocaleString()}
-          </div>
-        </main>
-      </div>
-    );
-  };
-
-  const renderForm = () => (
-    <div className="bg-slate-50 min-h-screen flex flex-col">
-      <header className="bg-white border-b border-slate-100 px-4 py-3 flex items-center justify-between sticky top-0 z-20">
-        <button onClick={() => setView(currentQuestion ? AppView.DETAIL : AppView.LIST)} className="p-2 -ml-2 text-slate-600"><ChevronLeftIcon /></button>
-        <span className="font-bold">{currentQuestion ? '修改内容' : '记录新面试题'}</span>
-        <button onClick={handleSave} disabled={isCategorizing} className={`text-indigo-600 font-black text-sm px-4 py-2 ${isCategorizing ? 'opacity-50' : ''}`}>
-          {isCategorizing ? '分类中...' : '保存'}
-        </button>
-      </header>
-      <main className="flex-1 p-6 max-w-5xl mx-auto w-full flex flex-col lg:flex-row gap-8">
-        {/* 左侧编辑器 */}
-        <div className="flex-1 space-y-8">
-          <div className="space-y-3">
-            <label className="text-xs font-black text-slate-400 uppercase tracking-widest">面试题目</label>
-            <textarea value={formData.text} onChange={(e) => setFormData({ ...formData, text: e.target.value })} placeholder="请输入面试题目..." className="w-full p-6 rounded-3xl border-slate-200 border-2 focus:border-indigo-500 outline-none transition-all text-xl font-bold" rows={3} />
-          </div>
-          <div className="space-y-4">
-            <div className="flex flex-col md:flex-row gap-4">
-              <div className="flex-1 space-y-2">
-                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">公司 / 备注</label>
-                <div className="relative">
-                  <BuildingIcon className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-slate-300" />
-                  <input type="text" placeholder="例如：蚂蚁金服一面" value={formData.companyTag} onChange={(e) => setFormData({ ...formData, companyTag: e.target.value })} className="w-full pl-9 pr-4 py-2 text-xs font-bold bg-white border border-slate-200 rounded-xl outline-none" />
-                </div>
-              </div>
-              <div className="space-y-2">
-                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">分类</label>
-                <div className="flex gap-2">
-                  <select value={formData.category} onChange={(e) => setFormData({ ...formData, category: e.target.value })} className="text-xs font-bold bg-white border border-slate-200 rounded-full px-4 py-2 outline-none h-10">
-                    {CATEGORIES.filter(c => c !== 'All').map(c => <option key={c} value={c}>{c}</option>)}
-                  </select>
-                  <button onClick={handleGenerateAnswer} disabled={isGenerating || !formData.text.trim()} className={`bg-indigo-600 text-white text-xs font-black px-5 py-2.5 rounded-full flex items-center gap-2 shadow-lg h-10 transition-all ${isGenerating ? 'opacity-50 scale-95' : 'hover:scale-105 active:scale-95'}`}>
-                    <SparklesIcon className="w-4 h-4" /> {isGenerating ? 'AI生成中...' : 'AI 一键生成'}
-                  </button>
-                </div>
-              </div>
-            </div>
-            <div className="relative group">
-              <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">详细答案</label>
-              <textarea value={formData.answer} onChange={(e) => setFormData({ ...formData, answer: e.target.value })} placeholder="手写或通过右侧 AI 助手协助完善答案..." className="w-full p-6 rounded-3xl border-slate-200 border-2 focus:border-indigo-500 outline-none h-96 text-slate-700 leading-relaxed font-medium" />
-              {isGenerating && <div className="absolute inset-0 bg-white/80 backdrop-blur-md rounded-3xl flex items-center justify-center z-10"><div className="w-12 h-12 border-4 border-indigo-100 border-t-indigo-600 rounded-full animate-spin"></div></div>}
-            </div>
-            {formData.sources && formData.sources.length > 0 && <SourceList sources={formData.sources} />}
-          </div>
-        </div>
-
-        {/* 右侧 AI 助手聊天 */}
-        <div className="w-full lg:w-80 flex flex-col bg-white rounded-3xl border border-slate-200 shadow-sm h-[600px] overflow-hidden">
-          <div className="p-4 bg-indigo-600 text-white flex items-center gap-2">
-            <SparklesIcon className="w-4 h-4" />
-            <span className="font-bold text-sm">AI 助手 (支持联网)</span>
-          </div>
-          
-          <div className="flex-1 overflow-y-auto p-4 space-y-4 no-scrollbar">
-            {chatHistory.length === 0 && (
-              <div className="text-center py-8 px-4">
-                <p className="text-xs text-slate-400 font-bold leading-relaxed">针对这道题，你可以问我：<br/>“如何优化这个回答？”<br/>“这个技术的最新进展是什么？”</p>
-              </div>
-            )}
-            {chatHistory.map((chat, idx) => (
-              <div key={idx} className={`flex flex-col ${chat.role === 'user' ? 'items-end' : 'items-start'}`}>
-                <div className={`max-w-[90%] p-3 rounded-2xl text-xs font-medium leading-relaxed ${
-                  chat.role === 'user' ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-700'
-                }`}>
-                  {chat.text}
-                </div>
-                {chat.role === 'model' && (
-                  <button 
-                    onClick={() => setFormData(prev => ({ ...prev, answer: chat.text }))}
-                    className="mt-1 text-[10px] font-bold text-indigo-600 hover:underline"
-                  >
-                    采用此答案
-                  </button>
-                )}
-              </div>
-            ))}
-            {isChatLoading && (
-              <div className="flex items-center gap-2 text-[10px] font-bold text-slate-400 animate-pulse">
-                <div className="w-1 h-1 bg-slate-300 rounded-full"></div>
-                AI 正在搜索并思考...
-              </div>
-            )}
-            <div ref={chatEndRef} />
-          </div>
-
-          <div className="p-4 border-t border-slate-100 flex gap-2">
-            <input 
-              type="text" 
-              value={chatInput} 
-              onChange={(e) => setChatInput(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && handleChatSend()}
-              placeholder="向 AI 提问..."
-              className="flex-1 px-3 py-2 bg-slate-100 rounded-xl text-xs outline-none focus:bg-white focus:ring-2 focus:ring-indigo-100 transition-all font-medium"
-            />
-            <button 
-              onClick={handleChatSend} 
-              disabled={isChatLoading || !chatInput.trim()}
-              className="p-2 bg-indigo-600 text-white rounded-xl active:scale-90 disabled:opacity-50 transition-all"
-            >
-              <PlusIcon />
-            </button>
-          </div>
-        </div>
-      </main>
-    </div>
-  );
+  const formatDate = (ts: number) => new Date(ts).toLocaleDateString();
 
   return (
-    <div className="min-h-screen bg-slate-50 selection:bg-indigo-100">
-      <style>{`.no-scrollbar::-webkit-scrollbar { display: none; }`}</style>
-      {view === AppView.LIST && renderList()}
-      {view === AppView.DETAIL && renderDetail()}
-      {view === AppView.FORM && renderForm()}
+    <div className="min-h-screen bg-slate-50 text-slate-900 font-sans pb-10">
+      <div className="max-w-6xl mx-auto px-4 py-8">
+        <header className="mb-8 flex flex-col md:flex-row md:items-center justify-between gap-4">
+          <div>
+            <h1 className="text-3xl font-bold bg-gradient-to-r from-indigo-600 to-purple-600 bg-clip-text text-transparent">Interview Master</h1>
+            <p className="text-slate-500 mt-1">AI-powered interview preparation toolkit</p>
+          </div>
+          <div className="flex items-center gap-2">
+            <button 
+              onClick={handleImportClick}
+              className="p-2 text-slate-600 hover:bg-slate-200 rounded-lg transition-colors"
+              title="Import Questions"
+            >
+              <UploadIcon />
+            </button>
+            <input 
+              type="file" 
+              ref={fileInputRef} 
+              onChange={handleFileChange} 
+              className="hidden" 
+              accept=".json,.xlsx,.xls"
+            />
+            <div className="relative group">
+              <button className="p-2 text-slate-600 hover:bg-slate-200 rounded-lg transition-colors">
+                <DownloadIcon />
+              </button>
+              <div className="absolute right-0 mt-2 w-48 bg-white border border-slate-200 rounded-xl shadow-xl opacity-0 group-hover:opacity-100 pointer-events-none group-hover:pointer-events-auto transition-all z-10">
+                <button onClick={handleExportExcel} className="w-full flex items-center gap-2 px-4 py-2 hover:bg-slate-50 text-sm">
+                  <ExcelIcon /> Export Excel
+                </button>
+                <button onClick={handleExportMarkdown} className="w-full flex items-center gap-2 px-4 py-2 hover:bg-slate-50 text-sm">
+                  <MarkdownIcon /> Export Markdown
+                </button>
+              </div>
+            </div>
+            <button 
+              onClick={handleCreateNew}
+              className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-xl transition-all shadow-md hover:shadow-lg"
+            >
+              <PlusIcon /> New Question
+            </button>
+          </div>
+        </header>
+
+        {view === AppView.LIST && (
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+            <div className="md:col-span-1 space-y-6">
+              <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm">
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="text-sm font-semibold text-slate-500 uppercase tracking-wider">Categories</h3>
+                  <button 
+                    onClick={() => setView(AppView.MANAGE_CATEGORIES)}
+                    className="p-1 text-slate-400 hover:text-indigo-600 rounded-md hover:bg-indigo-50 transition-colors"
+                    title="Manage Categories"
+                  >
+                    <PencilIcon />
+                  </button>
+                </div>
+                <div className="space-y-1">
+                  <button
+                    onClick={() => setSelectedCategory('All')}
+                    className={`w-full text-left px-3 py-2 rounded-lg text-sm transition-colors ${
+                      selectedCategory === 'All' 
+                        ? 'bg-indigo-50 text-indigo-700 font-medium' 
+                        : 'text-slate-600 hover:bg-slate-50'
+                    }`}
+                  >
+                    All
+                  </button>
+                  {categories.map(cat => (
+                    <button
+                      key={cat}
+                      onClick={() => setSelectedCategory(cat)}
+                      className={`w-full text-left px-3 py-2 rounded-lg text-sm transition-colors ${
+                        selectedCategory === cat 
+                          ? 'bg-indigo-50 text-indigo-700 font-medium' 
+                          : 'text-slate-600 hover:bg-slate-50'
+                      }`}
+                    >
+                      {cat}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              
+              <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm">
+                <h3 className="text-sm font-semibold text-slate-500 uppercase tracking-wider mb-4">Filters</h3>
+                <div>
+                  <label className="text-xs text-slate-400 block mb-1">Created Date</label>
+                  <div className="relative">
+                    <CalendarIcon className="absolute left-3 top-2.5 w-4 h-4 text-slate-400" />
+                    <input 
+                      type="date" 
+                      value={dateFilter}
+                      onChange={(e) => setDateFilter(e.target.value)}
+                      className="w-full pl-9 pr-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 outline-none transition-all"
+                    />
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="md:col-span-3 space-y-4">
+              <div className="relative">
+                <SearchIcon className="absolute left-4 top-3.5 w-5 h-5 text-slate-400" />
+                <input 
+                  type="text"
+                  placeholder="Search questions or companies..."
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className="w-full pl-12 pr-4 py-3 bg-white border border-slate-200 rounded-2xl shadow-sm focus:ring-2 focus:ring-indigo-500 outline-none transition-all"
+                />
+              </div>
+
+              {filteredQuestions.length > 0 ? (
+                <div className="grid grid-cols-1 gap-4">
+                  {filteredQuestions.map(q => (
+                    <div 
+                      key={q.id}
+                      onClick={() => handleViewDetail(q)}
+                      className="group bg-white p-5 rounded-2xl border border-slate-200 shadow-sm hover:shadow-md transition-all cursor-pointer relative overflow-hidden"
+                    >
+                      <div className={`absolute left-0 top-0 bottom-0 w-1 ${getCategoryColor(q.category)?.split(' ')[1] || 'bg-slate-200'}`} />
+                      <div className="flex justify-between items-start mb-2">
+                        <span className={`text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider border ${getCategoryColor(q.category)}`}>
+                          {q.category}
+                        </span>
+                        <div className="flex items-center gap-1">
+                          {q.isAiGenerated && <SparklesIcon className="w-4 h-4 text-indigo-500" />}
+                          <button 
+                            onClick={(e) => { e.stopPropagation(); handleEdit(q); }}
+                            className="p-1.5 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors"
+                          >
+                            <PencilIcon />
+                          </button>
+                          <button 
+                            onClick={(e) => handleDelete(q.id, e)}
+                            className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                          >
+                            <TrashIcon />
+                          </button>
+                        </div>
+                      </div>
+                      <h3 className="text-lg font-semibold text-slate-800 line-clamp-2 mb-2 group-hover:text-indigo-600 transition-colors">
+                        {q.text}
+                      </h3>
+                      <div className="flex items-center gap-4 text-xs text-slate-400">
+                        {q.companyTag && (
+                          <span className="flex items-center gap-1">
+                            <BuildingIcon className="w-3 h-3" /> {q.companyTag}
+                          </span>
+                        )}
+                        <span>Updated {formatDate(q.updatedAt)}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="text-center py-20 bg-white rounded-2xl border border-dashed border-slate-300">
+                  <p className="text-slate-400">No questions found. Try a different filter or create one!</p>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {view === AppView.MANAGE_CATEGORIES && (
+          <div className="max-w-2xl mx-auto">
+            <button onClick={() => setView(AppView.LIST)} className="flex items-center gap-2 text-slate-500 hover:text-slate-800 transition-colors mb-6">
+              <ChevronLeftIcon /> Back to list
+            </button>
+            <div className="bg-white p-8 rounded-3xl border border-slate-200 shadow-sm space-y-8">
+              <div>
+                <h2 className="text-2xl font-bold text-slate-900">Manage Categories</h2>
+                <p className="text-sm text-slate-500 mt-1">Add, rename or remove categories. Note: Renaming will update all associated questions.</p>
+              </div>
+
+              <div className="flex gap-2">
+                <input 
+                  type="text" 
+                  value={newCatName}
+                  onChange={(e) => setNewCatName(e.target.value)}
+                  placeholder="New category name..."
+                  className="flex-1 px-4 py-2 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none"
+                />
+                <button 
+                  onClick={handleAddCategory}
+                  className="bg-indigo-600 text-white px-4 py-2 rounded-xl hover:bg-indigo-700 transition-all font-bold"
+                >
+                  Add
+                </button>
+              </div>
+
+              <div className="divide-y divide-slate-100">
+                {categories.map(cat => (
+                  <div key={cat} className="py-4 flex items-center justify-between group">
+                    {editingCat?.old === cat ? (
+                      <div className="flex-1 flex gap-2">
+                        <input 
+                          autoFocus
+                          type="text" 
+                          value={editingCat.current}
+                          onChange={(e) => setEditingCat({...editingCat, current: e.target.value})}
+                          onKeyDown={(e) => e.key === 'Enter' && handleRenameCat(editingCat.old, editingCat.current)}
+                          className="flex-1 px-3 py-1 border border-indigo-500 rounded-lg outline-none text-sm"
+                        />
+                        <button onClick={() => handleRenameCat(editingCat.old, editingCat.current)} className="text-xs font-bold text-indigo-600">Save</button>
+                        <button onClick={() => setEditingCat(null)} className="text-xs font-bold text-slate-400">Cancel</button>
+                      </div>
+                    ) : (
+                      <>
+                        <div className="flex items-center gap-3">
+                          <div className={`w-3 h-3 rounded-full ${getCategoryColor(cat).split(' ')[1]}`} />
+                          <span className="font-medium text-slate-700">{cat}</span>
+                        </div>
+                        <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                          <button 
+                            onClick={() => setEditingCat({ old: cat, current: cat })}
+                            className="p-1.5 text-slate-400 hover:text-indigo-600 rounded-md transition-colors"
+                          >
+                            <PencilIcon />
+                          </button>
+                          <button 
+                            onClick={() => handleRemoveCat(cat)}
+                            className="p-1.5 text-slate-400 hover:text-red-600 rounded-md transition-colors"
+                          >
+                            <TrashIcon />
+                          </button>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {view === AppView.FORM && (
+          <div className="max-w-4xl mx-auto space-y-6">
+            <button onClick={() => setView(AppView.LIST)} className="flex items-center gap-2 text-slate-500 hover:text-slate-800 transition-colors mb-4">
+              <ChevronLeftIcon /> Back to list
+            </button>
+            
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+              <div className="lg:col-span-2 space-y-6">
+                <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm space-y-4">
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">Question Text</label>
+                    <textarea 
+                      value={formData.text}
+                      onChange={(e) => setFormData({...formData, text: e.target.value})}
+                      placeholder="Enter the interview question..."
+                      className="w-full px-4 py-2 border border-slate-200 rounded-xl min-h-[100px] focus:ring-2 focus:ring-indigo-500 outline-none"
+                    />
+                  </div>
+                  
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-sm font-medium text-slate-700 mb-1">Category</label>
+                      <select 
+                        value={formData.category}
+                        onChange={(e) => setFormData({...formData, category: e.target.value})}
+                        className="w-full px-4 py-2 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none"
+                      >
+                        {categories.map(c => <option key={c} value={c}>{c}</option>)}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-slate-700 mb-1">Company (Optional)</label>
+                      <input 
+                        type="text"
+                        value={formData.companyTag}
+                        onChange={(e) => setFormData({...formData, companyTag: e.target.value})}
+                        placeholder="e.g. Google, TikTok"
+                        className="w-full px-4 py-2 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none"
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <div className="flex justify-between items-center mb-1">
+                      <label className="block text-sm font-medium text-slate-700">Answer</label>
+                      <button 
+                        onClick={handleGenerateAnswer}
+                        disabled={isGenerating}
+                        className="flex items-center gap-1.5 text-xs font-semibold text-indigo-600 hover:text-indigo-700 disabled:opacity-50"
+                      >
+                        {isGenerating ? 'Generating...' : <><SparklesIcon className="w-4 h-4" /> AI Generate</>}
+                      </button>
+                    </div>
+                    <textarea 
+                      value={formData.answer}
+                      onChange={(e) => setFormData({...formData, answer: e.target.value})}
+                      placeholder="Write your answer or use AI to help..."
+                      className="w-full px-4 py-2 border border-slate-200 rounded-xl min-h-[300px] focus:ring-2 focus:ring-indigo-500 outline-none font-mono text-sm"
+                    />
+                  </div>
+
+                  <div className="flex justify-end gap-3 pt-4">
+                    <button onClick={() => setView(AppView.LIST)} className="px-6 py-2 border border-slate-200 rounded-xl hover:bg-slate-50 transition-colors">Cancel</button>
+                    <button onClick={handleSave} className="px-6 py-2 bg-indigo-600 text-white rounded-xl hover:bg-indigo-700 shadow-md transition-all">
+                      {isCategorizing ? 'Saving...' : 'Save Question'}
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <div className="lg:col-span-1 bg-slate-50 rounded-2xl border border-slate-200 flex flex-col h-[600px]">
+                <div className="p-4 border-b border-slate-200 bg-white rounded-t-2xl flex items-center gap-2">
+                  <SparklesIcon className="w-5 h-5 text-indigo-600" />
+                  <h3 className="font-semibold text-slate-800">AI Assistant</h3>
+                </div>
+                <div className="flex-1 overflow-y-auto p-4 space-y-4">
+                  {chatHistory.length === 0 && (
+                    <div className="text-center py-10">
+                      <p className="text-xs text-slate-400 px-6">Ask for help refining your answer, generating examples, or explaining concepts.</p>
+                    </div>
+                  )}
+                  {chatHistory.map((msg, i) => (
+                    <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                      <div className={`max-w-[85%] px-3 py-2 rounded-2xl text-sm ${
+                        msg.role === 'user' 
+                          ? 'bg-indigo-600 text-white rounded-tr-none' 
+                          : 'bg-white border border-slate-200 text-slate-700 rounded-tl-none shadow-sm'
+                      }`}>
+                        {msg.text}
+                      </div>
+                    </div>
+                  ))}
+                  {isChatLoading && (
+                    <div className="flex justify-start">
+                      <div className="bg-white border border-slate-200 px-3 py-2 rounded-2xl rounded-tl-none shadow-sm flex gap-1">
+                        <div className="w-1.5 h-1.5 bg-slate-300 rounded-full animate-bounce" />
+                        <div className="w-1.5 h-1.5 bg-slate-300 rounded-full animate-bounce delay-75" />
+                        <div className="w-1.5 h-1.5 bg-slate-300 rounded-full animate-bounce delay-150" />
+                      </div>
+                    </div>
+                  )}
+                  <div ref={chatEndRef} />
+                </div>
+                <div className="p-4 bg-white border-t border-slate-200 rounded-b-2xl">
+                  <div className="flex gap-2">
+                    <input 
+                      type="text" 
+                      value={chatInput}
+                      onChange={(e) => setChatInput(e.target.value)}
+                      onKeyDown={(e) => e.key === 'Enter' && handleChatSend()}
+                      placeholder="How can I improve this?"
+                      className="flex-1 bg-slate-100 border-none rounded-xl px-4 py-2 text-sm focus:ring-2 focus:ring-indigo-500 outline-none"
+                    />
+                    <button 
+                      onClick={handleChatSend}
+                      disabled={isChatLoading || !chatInput.trim()}
+                      className="bg-indigo-600 text-white p-2 rounded-xl hover:bg-indigo-700 disabled:opacity-50 transition-all flex items-center justify-center"
+                    >
+                      <PlusIcon />
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {view === AppView.DETAIL && currentQuestion && (
+          <div className="max-w-3xl mx-auto">
+            <button onClick={() => setView(AppView.LIST)} className="flex items-center gap-2 text-slate-500 hover:text-slate-800 transition-colors mb-6">
+              <ChevronLeftIcon /> Back to list
+            </button>
+            
+            <article className="bg-white p-8 rounded-3xl border border-slate-200 shadow-sm space-y-6">
+              <div className="flex justify-between items-start">
+                <span className={`text-xs font-bold px-3 py-1 rounded-full uppercase tracking-widest border ${getCategoryColor(currentQuestion.category)}`}>
+                  {currentQuestion.category}
+                </span>
+                <div className="flex gap-2">
+                  <button onClick={() => handleEdit(currentQuestion)} className="p-2 text-slate-400 hover:text-indigo-600 transition-colors">
+                    <PencilIcon />
+                  </button>
+                  <button onClick={() => handleDelete(currentQuestion.id)} className="p-2 text-slate-400 hover:text-red-600 transition-colors">
+                    <TrashIcon />
+                  </button>
+                </div>
+              </div>
+
+              <h2 className="text-3xl font-bold text-slate-900 leading-tight">
+                {currentQuestion.text}
+              </h2>
+
+              <div className="flex items-center gap-4 text-sm text-slate-500 pb-6 border-b border-slate-100">
+                {currentQuestion.companyTag && (
+                  <span className="flex items-center gap-1.5 bg-slate-100 px-3 py-1 rounded-full">
+                    <BuildingIcon /> {currentQuestion.companyTag}
+                  </span>
+                )}
+                <span>Updated on {formatDate(currentQuestion.updatedAt)}</span>
+                {currentQuestion.isAiGenerated && (
+                  <span className="flex items-center gap-1 text-indigo-600 font-medium italic">
+                    <SparklesIcon className="w-4 h-4" /> AI Generated
+                  </span>
+                )}
+              </div>
+
+              <div className="prose prose-slate max-w-none">
+                <h4 className="text-sm font-semibold text-slate-400 uppercase tracking-widest mb-4">Sample Answer</h4>
+                <div className="whitespace-pre-wrap text-slate-700 leading-relaxed bg-slate-50 p-6 rounded-2xl border border-slate-100 font-sans">
+                  {currentQuestion.answer || "No answer provided yet."}
+                </div>
+              </div>
+
+              {currentQuestion.sources && currentQuestion.sources.length > 0 && (
+                <SourceList sources={currentQuestion.sources} />
+              )}
+            </article>
+          </div>
+        )}
+      </div>
     </div>
   );
 };

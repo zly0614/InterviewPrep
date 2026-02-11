@@ -1,5 +1,7 @@
+
 import { GoogleGenAI, Type, Chat, GenerateContentResponse } from "@google/genai";
 import { GroundingChunk } from "../types";
+import { getCategories } from "./storageService";
 
 const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 
@@ -9,23 +11,24 @@ export interface GenerateResult {
   sources: GroundingChunk[];
 }
 
-const CATEGORY_PROMPT_PART = `
-Classify the question into one of these categories: 
-Algorithm, Reinforcement Learning, SFT, Machine Learning, NLP, Multimodal, Software Engineering, Behavioral, Other.
-`;
+const getCategoryPromptPart = () => {
+  const categories = getCategories();
+  return `Classify the question into one of these categories: ${categories.join(', ')}.`;
+};
 
 export const generateInterviewAnswer = async (question: string): Promise<GenerateResult> => {
   try {
+    const categories = getCategories();
     const response = await ai.models.generateContent({
       model: "gemini-3-flash-preview",
       contents: `You are an expert career coach. 
       1. Provide a professional, concise answer to the question.
-      2. ${CATEGORY_PROMPT_PART}
+      2. ${getCategoryPromptPart()}
       
       Question: ${question}`,
       config: {
         tools: [{ googleSearch: {} }],
-        systemInstruction: "Always start your response with the category in brackets, like [Category Name], followed by the answer. For example: [NLP] Natural Language Processing is..."
+        systemInstruction: `Always start your response with the category in brackets, like [Category Name], followed by the answer. The Category Name MUST be one of: ${categories.join(', ')}.`
       },
     });
 
@@ -69,10 +72,10 @@ export const createAiChatSession = (question: string, currentAnswer: string): Ch
 
 export const autoCategorize = async (question: string): Promise<string> => {
   try {
+    const categories = getCategories();
     const response = await ai.models.generateContent({
       model: "gemini-3-flash-preview",
-      contents: `Classify this interview question into exactly one category: 
-      Algorithm, Reinforcement Learning, SFT, Machine Learning, NLP, Multimodal, Software Engineering, Behavioral, Other.
+      contents: `Classify this interview question into exactly one category from this list: ${categories.join(', ')}.
       Return ONLY the category name.
       
       Question: ${question}`,

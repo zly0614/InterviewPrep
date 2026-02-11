@@ -1,3 +1,4 @@
+
 export interface GroundingChunk {
   web?: {
     uri: string;
@@ -21,12 +22,12 @@ export enum AppView {
   LIST = 'LIST',
   FORM = 'FORM',
   DETAIL = 'DETAIL',
+  MANAGE_CATEGORIES = 'MANAGE_CATEGORIES'
 }
 
 export type QuestionDraft = Omit<Question, 'id' | 'createdAt' | 'updatedAt'>;
 
-export const CATEGORIES = [
-  'All',
+export const DEFAULT_CATEGORIES = [
   'Algorithm',
   'Reinforcement Learning',
   'SFT',
@@ -48,4 +49,9 @@ export const CATEGORY_COLORS: Record<string, string> = {
   'Software Engineering': 'bg-slate-100 text-slate-700 border-slate-200',
   'Behavioral': 'bg-rose-100 text-rose-700 border-rose-200',
   'Other': 'bg-gray-100 text-gray-700 border-gray-200',
+};
+
+// Fallback color for dynamic categories
+export const getCategoryColor = (category: string) => {
+  return CATEGORY_COLORS[category] || 'bg-indigo-50 text-indigo-700 border-indigo-100';
 };

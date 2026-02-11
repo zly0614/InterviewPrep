@@ -1,79 +1,103 @@
-import { Question } from '../types';
+
+import { Question, DEFAULT_CATEGORIES } from '../types';
 
 const STORAGE_KEY = 'interview_prep_questions_v1';
-const LEGACY_KEYS = ['interview_questions', 'interview_prep_questions', 'interview_app_data'];
+const CATEGORIES_KEY = 'interview_prep_categories_v1';
+const DATA_FILE_URL = '/data/interview_questions.json';
 
-// 用于存储文件夹句柄，以便持久化同步
-let directoryHandle: any = null;
+/**
+ * 获取分类列表
+ */
+export const getCategories = (): string[] => {
+  const stored = localStorage.getItem(CATEGORIES_KEY);
+  if (stored) {
+    return JSON.parse(stored);
+  }
+  return DEFAULT_CATEGORIES;
+};
 
+/**
+ * 保存分类列表
+ */
+export const saveCategories = (categories: string[]) => {
+  localStorage.setItem(CATEGORIES_KEY, JSON.stringify(categories));
+};
+
+/**
+ * 获取所有面试题
+ */
 export const getQuestions = (): Question[] => {
   try {
     const stored = localStorage.getItem(STORAGE_KEY);
     if (stored) {
       return JSON.parse(stored);
     }
+    return [];
+  } catch (e) {
+    console.error('Failed to load questions from localStorage', e);
+    return [];
+  }
+};
 
-    for (const legacyKey of LEGACY_KEYS) {
-      const legacyData = localStorage.getItem(legacyKey);
-      if (legacyData) {
-        try {
-          const parsed = JSON.parse(legacyData);
-          if (Array.isArray(parsed) && parsed.length > 0) {
-            localStorage.setItem(STORAGE_KEY, JSON.stringify(parsed));
-            return parsed;
-          }
-        } catch (e) {
-          continue;
-        }
+/**
+ * 重命名分类并更新关联题目
+ */
+export const renameCategory = (oldName: string, newName: string) => {
+  const categories = getCategories();
+  const index = categories.indexOf(oldName);
+  if (index === -1) return;
+  
+  categories[index] = newName;
+  saveCategories(categories);
+
+  const questions = getQuestions();
+  let updated = false;
+  questions.forEach(q => {
+    if (q.category === oldName) {
+      q.category = newName;
+      updated = true;
+    }
+  });
+
+  if (updated) {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(questions));
+  }
+};
+
+/**
+ * 删除分类并将题目设为 Other
+ */
+export const removeCategory = (name: string) => {
+  const categories = getCategories().filter(c => c !== name);
+  saveCategories(categories);
+
+  const questions = getQuestions();
+  let updated = false;
+  questions.forEach(q => {
+    if (q.category === name) {
+      q.category = 'Other';
+      updated = true;
+    }
+  });
+
+  if (updated) {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(questions));
+  }
+};
+
+export const loadInitialDataFromProject = async (): Promise<Question[] | null> => {
+  try {
+    const response = await fetch(DATA_FILE_URL);
+    if (response.ok) {
+      const data = await response.json();
+      if (Array.isArray(data)) {
+        return data;
       }
     }
-    return [];
   } catch (e) {
-    console.error('Failed to load questions', e);
-    return [];
+    console.debug('Project data file not found at:', DATA_FILE_URL);
   }
-};
-
-/**
- * 设置本地同步文件夹
- */
-export const setSyncDirectory = async () => {
-  try {
-    // 调起浏览器文件夹选择器
-    const handle = await (window as any).showDirectoryPicker({
-      mode: 'readwrite'
-    });
-    directoryHandle = handle;
-    // 初始同步一次
-    await syncToLocalFile(getQuestions());
-    return true;
-  } catch (e) {
-    console.error('Directory picker cancelled or failed', e);
-    return false;
-  }
-};
-
-/**
- * 将数据同步到本地 JSON 文件
- */
-const syncToLocalFile = async (questions: Question[]) => {
-  if (!directoryHandle) return;
-
-  try {
-    // 1. 获取或创建 data 文件夹
-    const dataDirHandle = await directoryHandle.getDirectoryHandle('data', { create: true });
-    
-    // 2. 获取或创建 interview_questions.json 文件
-    const fileHandle = await dataDirHandle.getFileHandle('interview_questions.json', { create: true });
-    
-    // 3. 写入内容
-    const writable = await fileHandle.createWritable();
-    await writable.write(JSON.stringify(questions, null, 2));
-    await writable.close();
-    console.log('Successfully synced to local project folder: data/interview_questions.json');
-  } catch (e) {
-    console.error('Failed to sync to local file', e);
-  }
+  return null;
 };
 
 export const saveQuestion = async (question: Question): Promise<void> => {
@@ -86,19 +110,12 @@ export const saveQuestion = async (question: Question): Promise<void> => {
     questions.unshift(question);
   }
   
-  const dataString = JSON.stringify(questions);
-  localStorage.setItem(STORAGE_KEY, dataString);
-  
-  // 自动触发本地文件同步
-  await syncToLocalFile(questions);
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(questions));
 };
 
 export const deleteQuestion = async (id: string): Promise<void> => {
   const questions = getQuestions().filter((q) => q.id !== id);
   localStorage.setItem(STORAGE_KEY, JSON.stringify(questions));
-  
-  // 自动触发本地文件同步
-  await syncToLocalFile(questions);
 };
 
 export const importQuestions = async (newQuestions: Question[]): Promise<void> => {
@@ -117,9 +134,4 @@ export const importQuestions = async (newQuestions: Question[]): Promise<void> =
   
   const merged = Array.from(currentMap.values()).sort((a, b) => b.createdAt - a.createdAt);
   localStorage.setItem(STORAGE_KEY, JSON.stringify(merged));
-  
-  // 自动触发本地文件同步
-  await syncToLocalFile(merged);
 };
-
-export const isSyncEnabled = () => !!directoryHandle;
