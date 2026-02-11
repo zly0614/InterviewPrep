@@ -1,28 +1,25 @@
 import { Question } from '../types';
 
 const STORAGE_KEY = 'interview_prep_questions_v1';
-// 以前可能用过的关键词，用于数据迁移/找回
 const LEGACY_KEYS = ['interview_questions', 'interview_prep_questions', 'interview_app_data'];
+
+// 用于存储文件夹句柄，以便持久化同步
+let directoryHandle: any = null;
 
 export const getQuestions = (): Question[] => {
   try {
-    // 1. 尝试从当前版本 Key 获取
     const stored = localStorage.getItem(STORAGE_KEY);
     if (stored) {
       return JSON.parse(stored);
     }
 
-    // 2. 如果当前版本为空，尝试从旧版本 Key 找回数据
     for (const legacyKey of LEGACY_KEYS) {
       const legacyData = localStorage.getItem(legacyKey);
       if (legacyData) {
         try {
           const parsed = JSON.parse(legacyData);
           if (Array.isArray(parsed) && parsed.length > 0) {
-            console.log(`Found legacy data in ${legacyKey}, migrating...`);
-            // 迁移到新 Key
             localStorage.setItem(STORAGE_KEY, JSON.stringify(parsed));
-            // (可选) 迁移后可以清理旧 Key，这里为了安全先保留
             return parsed;
           }
         } catch (e) {
@@ -30,7 +27,6 @@ export const getQuestions = (): Question[] => {
         }
       }
     }
-
     return [];
   } catch (e) {
     console.error('Failed to load questions', e);
@@ -38,25 +34,74 @@ export const getQuestions = (): Question[] => {
   }
 };
 
-export const saveQuestion = (question: Question): void => {
+/**
+ * 设置本地同步文件夹
+ */
+export const setSyncDirectory = async () => {
+  try {
+    // 调起浏览器文件夹选择器
+    const handle = await (window as any).showDirectoryPicker({
+      mode: 'readwrite'
+    });
+    directoryHandle = handle;
+    // 初始同步一次
+    await syncToLocalFile(getQuestions());
+    return true;
+  } catch (e) {
+    console.error('Directory picker cancelled or failed', e);
+    return false;
+  }
+};
+
+/**
+ * 将数据同步到本地 JSON 文件
+ */
+const syncToLocalFile = async (questions: Question[]) => {
+  if (!directoryHandle) return;
+
+  try {
+    // 1. 获取或创建 data 文件夹
+    const dataDirHandle = await directoryHandle.getDirectoryHandle('data', { create: true });
+    
+    // 2. 获取或创建 interview_questions.json 文件
+    const fileHandle = await dataDirHandle.getFileHandle('interview_questions.json', { create: true });
+    
+    // 3. 写入内容
+    const writable = await fileHandle.createWritable();
+    await writable.write(JSON.stringify(questions, null, 2));
+    await writable.close();
+    console.log('Successfully synced to local project folder: data/interview_questions.json');
+  } catch (e) {
+    console.error('Failed to sync to local file', e);
+  }
+};
+
+export const saveQuestion = async (question: Question): Promise<void> => {
   const questions = getQuestions();
   const existingIndex = questions.findIndex((q) => q.id === question.id);
   
   if (existingIndex >= 0) {
     questions[existingIndex] = question;
   } else {
-    questions.unshift(question); // Add to top
+    questions.unshift(question);
   }
   
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(questions));
+  const dataString = JSON.stringify(questions);
+  localStorage.setItem(STORAGE_KEY, dataString);
+  
+  // 自动触发本地文件同步
+  await syncToLocalFile(questions);
 };
 
-export const deleteQuestion = (id: string): void => {
+export const deleteQuestion = async (id: string): Promise<void> => {
   const questions = getQuestions().filter((q) => q.id !== id);
   localStorage.setItem(STORAGE_KEY, JSON.stringify(questions));
+  
+  // 自动触发本地文件同步
+  await syncToLocalFile(questions);
 };
 
-export const importQuestions = (newQuestions: Question[]): void => {
+export const importQuestions = async (newQuestions: Question[]): Promise<void> => {
   if (!Array.isArray(newQuestions)) {
     throw new Error('Invalid data format');
   }
@@ -72,4 +117,9 @@ export const importQuestions = (newQuestions: Question[]): void => {
   
   const merged = Array.from(currentMap.values()).sort((a, b) => b.createdAt - a.createdAt);
   localStorage.setItem(STORAGE_KEY, JSON.stringify(merged));
+  
+  // 自动触发本地文件同步
+  await syncToLocalFile(merged);
 };
+
+export const isSyncEnabled = () => !!directoryHandle;

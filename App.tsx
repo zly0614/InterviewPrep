@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import * as XLSX from 'xlsx';
 import { AppView, Question, QuestionDraft, GroundingChunk, CATEGORIES, CATEGORY_COLORS } from './types';
-import { getQuestions, saveQuestion, deleteQuestion, importQuestions } from './services/storageService';
+import { getQuestions, saveQuestion, deleteQuestion, importQuestions, setSyncDirectory, isSyncEnabled } from './services/storageService';
 import { generateInterviewAnswer, autoCategorize, createAiChatSession } from './services/geminiService';
 import { PlusIcon, ChevronLeftIcon, SparklesIcon, TrashIcon, PencilIcon, DownloadIcon, UploadIcon, SearchIcon, CalendarIcon, BuildingIcon, ExcelIcon, MarkdownIcon } from './components/Icons';
 import { SourceList } from './components/SourceList';
@@ -13,6 +13,8 @@ const App: React.FC = () => {
   const [selectedCategory, setSelectedCategory] = useState<string>('All');
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [dateFilter, setDateFilter] = useState<string>('');
+  const [isSynced, setIsSynced] = useState(false);
+  
   const fileInputRef = useRef<HTMLInputElement>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
   
@@ -38,6 +40,7 @@ const App: React.FC = () => {
   useEffect(() => {
     const data = getQuestions();
     setQuestions(data);
+    setIsSynced(isSyncEnabled());
   }, []);
 
   // 聊天自动滚动
@@ -48,26 +51,16 @@ const App: React.FC = () => {
   const refreshQuestions = () => {
     const loaded = getQuestions();
     setQuestions(loaded);
+    setIsSynced(isSyncEnabled());
   };
 
-  const filteredQuestions = useMemo(() => {
-    return questions.filter(q => {
-      const matchesCategory = selectedCategory === 'All' || q.category === selectedCategory;
-      const query = searchQuery.toLowerCase();
-      const matchesSearch = !searchQuery || 
-        q.text.toLowerCase().includes(query) || 
-        q.answer.toLowerCase().includes(query) || 
-        (q.companyTag && q.companyTag.toLowerCase().includes(query));
-      
-      let matchesDate = true;
-      if (dateFilter) {
-        const filterTime = new Date(dateFilter).setHours(0, 0, 0, 0);
-        const questionTime = new Date(q.createdAt).setHours(0, 0, 0, 0);
-        matchesDate = questionTime === filterTime;
-      }
-      return matchesCategory && matchesSearch && matchesDate;
-    });
-  }, [questions, selectedCategory, searchQuery, dateFilter]);
+  const handleSyncFolder = async () => {
+    const success = await setSyncDirectory();
+    if (success) {
+      setIsSynced(true);
+      alert('已连接本地项目文件夹。之后的所有更改将自动同步到 data/interview_questions.json');
+    }
+  };
 
   const handleCreateNew = () => {
     setFormData({ text: '', answer: '', category: 'Other', companyTag: '', isAiGenerated: false, sources: [] });
@@ -97,10 +90,10 @@ const App: React.FC = () => {
     setView(AppView.DETAIL);
   };
 
-  const handleDelete = (id: string, e?: React.MouseEvent) => {
+  const handleDelete = async (id: string, e?: React.MouseEvent) => {
     e?.stopPropagation();
     if (confirm('确定要删除这道题吗？')) {
-      deleteQuestion(id);
+      await deleteQuestion(id);
       refreshQuestions();
       if (view === AppView.DETAIL) setView(AppView.LIST);
     }
@@ -132,7 +125,7 @@ const App: React.FC = () => {
       sources: formData.sources,
     };
 
-    saveQuestion(newQuestion);
+    await saveQuestion(newQuestion);
     refreshQuestions();
     setView(AppView.LIST);
   };
@@ -183,7 +176,7 @@ const App: React.FC = () => {
     }
   };
 
-  // --- 导出逻辑 ---
+  // --- 导出/导入逻辑 ---
   const downloadFile = (content: string, fileName: string, contentType: string) => {
     const blob = new Blob([content], { type: contentType });
     const url = URL.createObjectURL(blob);
@@ -246,11 +239,11 @@ const App: React.FC = () => {
     const file = e.target.files?.[0];
     if (!file) return;
     const reader = new FileReader();
-    reader.onload = (event) => {
+    reader.onload = async (event) => {
       try {
         const json = event.target?.result as string;
         const parsed = JSON.parse(json);
-        importQuestions(parsed);
+        await importQuestions(parsed);
         refreshQuestions();
         alert('导入成功！');
       } catch (err) {
@@ -262,6 +255,25 @@ const App: React.FC = () => {
     reader.readAsText(file);
   };
 
+  const filteredQuestions = useMemo(() => {
+    return questions.filter(q => {
+      const matchesCategory = selectedCategory === 'All' || q.category === selectedCategory;
+      const query = searchQuery.toLowerCase();
+      const matchesSearch = !searchQuery || 
+        q.text.toLowerCase().includes(query) || 
+        q.answer.toLowerCase().includes(query) || 
+        (q.companyTag && q.companyTag.toLowerCase().includes(query));
+      
+      let matchesDate = true;
+      if (dateFilter) {
+        const filterTime = new Date(dateFilter).setHours(0, 0, 0, 0);
+        const questionTime = new Date(q.createdAt).setHours(0, 0, 0, 0);
+        matchesDate = questionTime === filterTime;
+      }
+      return matchesCategory && matchesSearch && matchesDate;
+    });
+  }, [questions, selectedCategory, searchQuery, dateFilter]);
+
   const formatTimestamp = (ts: number) => new Date(ts).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 
   // --- 视图渲染 ---
@@ -269,7 +281,18 @@ const App: React.FC = () => {
     <div className="pb-24">
       <header className="bg-white sticky top-0 z-20 shadow-sm">
         <div className="px-4 pt-4 pb-2 flex items-center justify-between border-b border-slate-50">
-          <h1 className="text-xl font-bold text-slate-800">面试<span className="text-indigo-600">小助手</span></h1>
+          <div className="flex items-center gap-3">
+            <h1 className="text-xl font-bold text-slate-800">面试<span className="text-indigo-600">小助手</span></h1>
+            <button 
+              onClick={handleSyncFolder}
+              className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-[10px] font-bold transition-all border ${
+                isSynced ? 'bg-emerald-50 text-emerald-600 border-emerald-100' : 'bg-slate-100 text-slate-500 border-slate-200 hover:bg-slate-200'
+              }`}
+            >
+              <div className={`w-1.5 h-1.5 rounded-full ${isSynced ? 'bg-emerald-500' : 'bg-slate-400'}`}></div>
+              {isSynced ? '已同步到本地项目' : '未连接本地项目'}
+            </button>
+          </div>
           <div className="flex items-center gap-1">
             <input type="file" ref={fileInputRef} onChange={handleFileChange} accept=".json" className="hidden" />
             <button onClick={handleImportClick} title="从备份文件导入" className="p-2 text-slate-400 hover:text-indigo-600 hover:bg-slate-50 rounded-full transition-colors"><UploadIcon /></button>
@@ -327,6 +350,7 @@ const App: React.FC = () => {
             <div className="mb-4 flex justify-center"><SparklesIcon className="w-12 h-12 text-slate-200" /></div>
             <p className="text-lg font-bold">列表空空如也</p>
             <p className="text-sm mt-1">记录您的第一道面试题吧</p>
+            <button onClick={handleSyncFolder} className="mt-6 text-xs text-indigo-600 font-bold border-b border-indigo-100 pb-0.5">连接本地项目文件夹以实时保存数据</button>
           </div>
         ) : (
           filteredQuestions.map(q => (
