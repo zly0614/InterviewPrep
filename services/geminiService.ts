@@ -1,5 +1,4 @@
-
-import { GoogleGenAI, Type, Chat, GenerateContentResponse } from "@google/genai";
+import { GoogleGenAI, Chat } from "@google/genai";
 import { GroundingChunk } from "../types";
 import { getCategories } from "./storageService";
 
@@ -16,6 +15,9 @@ const getCategoryPromptPart = () => {
   return `Classify the question into one of these categories: ${categories.join(', ')}.`;
 };
 
+/**
+ * Generates an interview answer using Gemini with Google Search grounding.
+ */
 export const generateInterviewAnswer = async (question: string): Promise<GenerateResult> => {
   try {
     const categories = getCategories();
@@ -32,6 +34,7 @@ export const generateInterviewAnswer = async (question: string): Promise<Generat
       },
     });
 
+    // Directly access text property from the response
     const fullText = response.text || "";
     let category = "Other";
     let answer = fullText;
@@ -42,8 +45,16 @@ export const generateInterviewAnswer = async (question: string): Promise<Generat
       answer = fullText.replace(categoryMatch[0], "").trim();
     }
     
+    // Extract grounding URLs from search tool metadata
     const chunks = response.candidates?.[0]?.groundingMetadata?.groundingChunks || [];
-    const validSources = chunks.filter((chunk: any) => chunk.web?.uri && chunk.web?.title) as GroundingChunk[];
+    const validSources = chunks
+      .filter((chunk: any) => chunk.web?.uri && chunk.web?.title)
+      .map((chunk: any) => ({
+        web: {
+          uri: chunk.web.uri,
+          title: chunk.web.title
+        }
+      })) as GroundingChunk[];
 
     return {
       answer,
@@ -56,6 +67,9 @@ export const generateInterviewAnswer = async (question: string): Promise<Generat
   }
 };
 
+/**
+ * Initializes a new chat session for refining interview answers.
+ */
 export const createAiChatSession = (question: string, currentAnswer: string): Chat => {
   return ai.chats.create({
     model: 'gemini-3-flash-preview',
@@ -70,6 +84,9 @@ export const createAiChatSession = (question: string, currentAnswer: string): Ch
   });
 };
 
+/**
+ * Categorizes a question based on its content using the Gemini model.
+ */
 export const autoCategorize = async (question: string): Promise<string> => {
   try {
     const categories = getCategories();

@@ -25,6 +25,8 @@ export enum AppView {
   MANAGE_CATEGORIES = 'MANAGE_CATEGORIES'
 }
 
+export type DateFilter = 'all' | 'today' | 'week' | 'month' | 'year';
+
 export type QuestionDraft = Omit<Question, 'id' | 'createdAt' | 'updatedAt'>;
 
 export const DEFAULT_CATEGORIES = [
@@ -51,7 +53,6 @@ export const CATEGORY_COLORS: Record<string, string> = {
   'Other': 'bg-gray-100 text-gray-700 border-gray-200',
 };
 
-// Fallback color for dynamic categories
 export const getCategoryColor = (category: string) => {
   return CATEGORY_COLORS[category] || 'bg-indigo-50 text-indigo-700 border-indigo-100';
 };

@@ -1,50 +1,92 @@
 
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import * as XLSX from 'xlsx';
-import { AppView, Question, QuestionDraft, GroundingChunk, CATEGORY_COLORS, getCategoryColor } from './types';
+import { AppView, Question, QuestionDraft, getCategoryColor, GroundingChunk, DateFilter } from './types';
 import { 
   getQuestions, 
   saveQuestion, 
   deleteQuestion, 
-  importQuestions, 
   loadInitialDataFromProject,
   getCategories,
-  saveCategories,
-  renameCategory,
-  removeCategory
+  importQuestions,
+  exportQuestions
 } from './services/storageService';
 import { generateInterviewAnswer, autoCategorize, createAiChatSession } from './services/geminiService';
-import { PlusIcon, ChevronLeftIcon, SparklesIcon, TrashIcon, PencilIcon, DownloadIcon, UploadIcon, SearchIcon, CalendarIcon, BuildingIcon, ExcelIcon, MarkdownIcon } from './components/Icons';
+import { PlusIcon, ChevronLeftIcon, SparklesIcon, TrashIcon, PencilIcon, SearchIcon, CalendarIcon, BuildingIcon, DownloadIcon, UploadIcon } from './components/Icons';
 import { SourceList } from './components/SourceList';
+import { Chat, GenerateContentResponse } from "@google/genai";
 
 const formatDate = (timestamp: number) => {
   return new Date(timestamp).toLocaleDateString();
 };
 
-// Component to handle KaTeX rendering
+/**
+ * 核心：专业公式渲染组件
+ * 实现学术级的排版（分式、下标、矩阵、Hat符号等）
+ */
 const MathContent: React.FC<{ content: string; className?: string }> = ({ content, className }) => {
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (containerRef.current && (window as any).renderMathInElement) {
-      (window as any).renderMathInElement(containerRef.current, {
-        delimiters: [
-          { left: '$$', right: '$$', display: true },
-          { left: '$', right: '$', display: false },
-          { left: '\\(', right: '\\)', display: false },
-          { left: '\\[', right: '\\]', display: true }
-        ],
-        throwOnError: false
-      });
-    }
+    if (!content) return;
+
+    const render = () => {
+      if (containerRef.current && (window as any).renderMathInElement) {
+        try {
+          (window as any).renderMathInElement(containerRef.current, {
+            delimiters: [
+              { left: '$$', right: '$$', display: true },
+              { left: '$', right: '$', display: false },
+              { left: '\\(', right: '\\)', display: false },
+              { left: '\\[', right: '\\]', display: true },
+              { left: '\\begin{equation}', right: '\\end{equation}', display: true },
+              { left: '\\begin{align}', right: '\\end{align}', display: true }
+            ],
+            throwOnError: false,
+            trust: true,
+            strict: false,
+            macros: {
+              "\\Softmax": "\\text{Softmax}",
+              "\\mean": "\\text{mean}",
+              "\\std": "\\text{std}"
+            }
+          });
+        } catch (err) {
+          console.warn("KaTeX Error:", err);
+        }
+      } else {
+        setTimeout(render, 300);
+      }
+    };
+
+    render();
+  }, [content]);
+
+  const processedContent = useMemo(() => {
+    if (!content) return "";
+    return content
+      .replace(/\\\[/g, '$$$$')
+      .replace(/\\\]/g, '$$$$')
+      .replace(/\\\(/g, '$')
+      .replace(/\\\)/g, '$');
   }, [content]);
 
   return (
-    <div ref={containerRef} className={className}>
-      {content}
+    <div 
+      ref={containerRef} 
+      className={`${className} math-container prose prose-slate max-w-none`}
+    >
+      <div className="whitespace-pre-wrap break-words leading-relaxed text-slate-700">
+        {processedContent}
+      </div>
     </div>
   );
 };
+
+interface ChatMessage {
+  role: 'user' | 'model';
+  text: string;
+  sources?: GroundingChunk[];
+}
 
 const App: React.FC = () => {
   const [view, setView] = useState<AppView>(AppView.LIST);
@@ -52,17 +94,17 @@ const App: React.FC = () => {
   const [categories, setCategories] = useState<string[]>([]);
   const [currentQuestion, setCurrentQuestion] = useState<Question | null>(null);
   const [selectedCategory, setSelectedCategory] = useState<string>('All');
+  const [dateFilter, setDateFilter] = useState<DateFilter>('all');
   const [searchQuery, setSearchQuery] = useState<string>('');
-  const [dateFilter, setDateFilter] = useState<string>('');
   
-  // Resizing state
-  const [sidebarWidth, setSidebarWidth] = useState(380);
-  const isResizing = useRef(false);
+  const [sidebarWidth, setSidebarWidth] = useState(500);
+  const [isSidebarExpanded, setIsSidebarExpanded] = useState(false);
+  const [isDragging, setIsDragging] = useState(false);
+  const dragStartX = useRef(0);
+  const initialWidth = useRef(0);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
-  
-  // 表单状态
   const [formData, setFormData] = useState<QuestionDraft>({
     text: '',
     answer: '',
@@ -72,63 +114,40 @@ const App: React.FC = () => {
     sources: [],
   });
   const [isGenerating, setIsGenerating] = useState(false);
-  const [isCategorizing, setIsCategorizing] = useState(false);
-
-  // 分类管理状态
-  const [newCatName, setNewCatName] = useState('');
-  const [editingCat, setEditingCat] = useState<{ old: string, current: string } | null>(null);
-
-  // AI 聊天状态
-  const [chatHistory, setChatHistory] = useState<{ role: 'user' | 'model', text: string }[]>([]);
+  const [chatHistory, setChatHistory] = useState<ChatMessage[]>([]);
   const [chatInput, setChatInput] = useState('');
   const [isChatLoading, setIsChatLoading] = useState(false);
-  const chatSessionRef = useRef<any>(null);
+  const chatSessionRef = useRef<Chat | null>(null);
 
-  // 初始化加载
   useEffect(() => {
     const init = async () => {
       const projectData = await loadInitialDataFromProject();
       if (projectData && projectData.length > 0) {
         const localData = getQuestions();
-        if (localData.length === 0) {
-          await importQuestions(projectData);
-        }
+        if (localData.length === 0) await importQuestions(projectData);
       }
       refreshAll();
     };
     init();
   }, []);
 
-  // Handle Resizing logic
   useEffect(() => {
-    const handleMouseMove = (e: MouseEvent) => {
-      if (!isResizing.current) return;
-      // Calculate from the right edge
-      const newWidth = window.innerWidth - e.clientX - 24; // 24 is roughly the gap/padding
-      if (newWidth >= 300 && newWidth <= 800) {
-        setSidebarWidth(newWidth);
-      }
+    const onMouseMove = (e: MouseEvent) => {
+      if (!isDragging) return;
+      const delta = dragStartX.current - e.clientX;
+      const newWidth = initialWidth.current + delta;
+      if (newWidth > 350 && newWidth < window.innerWidth * 0.8) setSidebarWidth(newWidth);
     };
-
-    const handleMouseUp = () => {
-      isResizing.current = false;
-      document.body.style.cursor = 'default';
-      document.body.style.userSelect = 'auto';
-    };
-
-    window.addEventListener('mousemove', handleMouseMove);
-    window.addEventListener('mouseup', handleMouseUp);
+    const onMouseUp = () => setIsDragging(false);
+    if (isDragging) {
+      window.addEventListener('mousemove', onMouseMove);
+      window.addEventListener('mouseup', onMouseUp);
+    }
     return () => {
-      window.removeEventListener('mousemove', handleMouseMove);
-      window.removeEventListener('mouseup', handleMouseUp);
+      window.removeEventListener('mousemove', onMouseMove);
+      window.removeEventListener('mouseup', onMouseUp);
     };
-  }, []);
-
-  const startResizing = (e: React.MouseEvent) => {
-    isResizing.current = true;
-    document.body.style.cursor = 'col-resize';
-    document.body.style.userSelect = 'none';
-  };
+  }, [isDragging]);
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -177,18 +196,11 @@ const App: React.FC = () => {
   };
 
   const handleSave = async () => {
-    if (!formData.text.trim()) {
-      alert('请输入题目内容');
-      return;
-    }
-
+    if (!formData.text.trim()) return;
     let finalCategory = formData.category;
     if (!currentQuestion && formData.category === 'Other') {
-      setIsCategorizing(true);
       finalCategory = await autoCategorize(formData.text);
-      setIsCategorizing(false);
     }
-
     const now = Date.now();
     const newQuestion: Question = {
       id: currentQuestion ? currentQuestion.id : crypto.randomUUID(),
@@ -201,40 +213,27 @@ const App: React.FC = () => {
       isAiGenerated: formData.isAiGenerated,
       sources: formData.sources,
     };
-
     await saveQuestion(newQuestion);
     refreshAll();
     setView(AppView.LIST);
   };
 
-  const handleAddCategory = () => {
-    if (!newCatName.trim()) return;
-    if (categories.includes(newCatName.trim())) {
-      alert('分类已存在');
-      return;
-    }
-    const updated = [...categories, newCatName.trim()];
-    saveCategories(updated);
-    setCategories(updated);
-    setNewCatName('');
-  };
-
-  const handleRenameCat = (oldName: string, newName: string) => {
-    if (!newName.trim() || oldName === newName) {
-      setEditingCat(null);
-      return;
-    }
-    renameCategory(oldName, newName);
-    setEditingCat(null);
-    refreshAll();
-  };
-
-  const handleRemoveCat = (name: string) => {
-    if (name === 'Other') return;
-    if (confirm(`确定要删除分类 "${name}" 吗？该分类下的题目将自动归为 Other。`)) {
-      removeCategory(name);
-      refreshAll();
-    }
+  const handleImport = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = async (event) => {
+      try {
+        const json = JSON.parse(event.target?.result as string);
+        await importQuestions(json);
+        refreshAll();
+        alert('导入成功');
+      } catch (err) {
+        alert('导入失败，请检查文件格式');
+      }
+    };
+    reader.readAsText(file);
+    if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
   const handleChatSend = async () => {
@@ -242,15 +241,29 @@ const App: React.FC = () => {
     if (!chatSessionRef.current) {
       chatSessionRef.current = createAiChatSession(formData.text, formData.answer);
     }
-    const userMessage = chatInput;
+    const msg = chatInput;
     setChatInput('');
-    setChatHistory(prev => [...prev, { role: 'user', text: userMessage }]);
+    setChatHistory(prev => [...prev, { role: 'user', text: msg }]);
     setIsChatLoading(true);
     try {
-      const result = await chatSessionRef.current.sendMessage({ message: userMessage });
-      setChatHistory(prev => [...prev, { role: 'model', text: result.text || "AI 暂时无法回答。" }]);
-    } catch (error) {
-      setChatHistory(prev => [...prev, { role: 'model', text: "抱歉，我遇到了点问题，请稍后再试。" }]);
+      const result: GenerateContentResponse = await chatSessionRef.current.sendMessage({ message: msg });
+      const chunks = result.candidates?.[0]?.groundingMetadata?.groundingChunks || [];
+      const sources = chunks
+        .filter((chunk: any) => chunk.web?.uri && chunk.web?.title)
+        .map((chunk: any) => ({
+          web: {
+            uri: chunk.web.uri,
+            title: chunk.web.title
+          }
+        })) as GroundingChunk[];
+
+      setChatHistory(prev => [...prev, { 
+        role: 'model', 
+        text: result.text || "AI 暂时无法回答。",
+        sources: sources.length > 0 ? sources : undefined
+      }]);
+    } catch (e) {
+      setChatHistory(prev => [...prev, { role: 'model', text: "抱歉，解析推导时出现了错误。" }]);
     } finally {
       setIsChatLoading(false);
     }
@@ -275,243 +288,212 @@ const App: React.FC = () => {
     }
   };
 
-  const handleExportExcel = () => {
-    const ws = XLSX.utils.json_to_sheet(questions);
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "Questions");
-    XLSX.writeFile(wb, "interview_questions.xlsx");
-  };
-
-  const handleImportClick = () => {
-    fileInputRef.current?.click();
-  };
-
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = async (event) => {
-      try {
-        const data = event.target?.result;
-        if (file.name.endsWith('.json')) {
-          const parsed = JSON.parse(data as string);
-          await importQuestions(parsed);
-          refreshAll();
-        }
-      } catch (err) {
-        alert('导入失败');
-      }
-    };
-    reader.readAsText(file);
-  };
-
   const filteredQuestions = useMemo(() => {
+    const now = Date.now();
     return questions.filter(q => {
+      // Category check
       const matchCategory = selectedCategory === 'All' || q.category === selectedCategory;
+      
+      // Date check
+      let matchDate = true;
+      if (dateFilter !== 'all') {
+        const diff = now - q.updatedAt;
+        const oneDay = 24 * 60 * 60 * 1000;
+        if (dateFilter === 'today') matchDate = diff < oneDay;
+        else if (dateFilter === 'week') matchDate = diff < oneDay * 7;
+        else if (dateFilter === 'month') matchDate = diff < oneDay * 30;
+        else if (dateFilter === 'year') matchDate = diff < oneDay * 365;
+      }
+
+      // Search check
       const matchSearch = q.text.toLowerCase().includes(searchQuery.toLowerCase()) || 
                           (q.companyTag && q.companyTag.toLowerCase().includes(searchQuery.toLowerCase()));
-      const matchDate = !dateFilter || new Date(q.createdAt).toISOString().split('T')[0] === dateFilter;
-      return matchCategory && matchSearch && matchDate;
+      
+      return matchCategory && matchDate && matchSearch;
     });
-  }, [questions, selectedCategory, searchQuery, dateFilter]);
+  }, [questions, selectedCategory, dateFilter, searchQuery]);
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 font-sans pb-10">
-      <div className="max-w-6xl mx-auto px-4 py-8">
-        <header className="mb-8 flex flex-col md:flex-row md:items-center justify-between gap-4">
-          <div>
-            <h1 className="text-3xl font-bold bg-gradient-to-r from-indigo-600 to-purple-600 bg-clip-text text-transparent">Interview Master</h1>
-            <p className="text-slate-500 mt-1">AI 驱动的面试题库记录工具</p>
+      <div className="max-w-[1600px] mx-auto px-6 py-8">
+        <header className="mb-10 flex flex-col md:flex-row md:items-center justify-between gap-6">
+          <div className="flex items-center gap-5">
+             <div className="p-4 bg-indigo-600 rounded-[1.2rem] shadow-2xl shadow-indigo-200">
+               <SparklesIcon className="w-7 h-7 text-white" />
+             </div>
+             <div>
+               <h1 className="text-4xl font-black bg-gradient-to-br from-slate-900 to-indigo-600 bg-clip-text text-transparent tracking-tight">Interview Master</h1>
+               <p className="text-slate-400 font-bold uppercase tracking-widest text-[10px] mt-1">Professional Assistant</p>
+             </div>
           </div>
-          <div className="flex items-center gap-2">
-            <button onClick={handleImportClick} className="p-2 text-slate-600 hover:bg-slate-200 rounded-lg transition-colors">
-              <UploadIcon />
-            </button>
-            <input type="file" ref={fileInputRef} onChange={handleFileChange} className="hidden" accept=".json" />
-            <button onClick={handleExportExcel} className="p-2 text-slate-600 hover:bg-slate-200 rounded-lg transition-colors">
-              <ExcelIcon />
-            </button>
-            <button 
-              onClick={handleCreateNew}
-              className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white px-5 py-2.5 rounded-xl transition-all shadow-md hover:shadow-lg font-bold"
-            >
-              <PlusIcon /> 新增题目
-            </button>
-          </div>
+          <button onClick={handleCreateNew} className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white px-8 py-4 rounded-2xl transition-all shadow-xl font-black text-sm active:scale-95">
+            <PlusIcon /> 新增面试题
+          </button>
         </header>
 
         {view === AppView.LIST && (
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
-            <div className="md:col-span-1 space-y-6">
-              <div className="bg-white p-5 rounded-3xl border border-slate-200 shadow-sm">
-                <div className="flex items-center justify-between mb-4">
-                  <h3 className="text-xs font-black text-slate-400 uppercase tracking-widest">题库分类</h3>
-                  <button onClick={() => setView(AppView.MANAGE_CATEGORIES)} className="p-1.5 text-slate-400 hover:text-indigo-600 rounded-lg hover:bg-indigo-50 transition-colors">
-                    <PencilIcon />
-                  </button>
-                </div>
-                <div className="space-y-1.5">
-                  <button
-                    onClick={() => setSelectedCategory('All')}
-                    className={`w-full text-left px-4 py-2.5 rounded-xl text-sm transition-all ${selectedCategory === 'All' ? 'bg-indigo-600 text-white font-bold' : 'text-slate-600 hover:bg-slate-50'}`}
-                  >
-                    全部题目
-                  </button>
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-10">
+            <div className="md:col-span-1 space-y-8">
+              {/* Category Filter */}
+              <div className="bg-white p-8 rounded-[2rem] border border-slate-200 shadow-sm">
+                <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-6">题库分类</h3>
+                <div className="space-y-2">
+                  <button onClick={() => setSelectedCategory('All')} className={`w-full text-left px-5 py-4 rounded-2xl text-sm transition-all font-bold ${selectedCategory === 'All' ? 'bg-indigo-600 text-white shadow-xl shadow-indigo-100' : 'text-slate-500 hover:bg-slate-50'}`}>全部</button>
                   {categories.map(cat => (
-                    <button
-                      key={cat}
-                      onClick={() => setSelectedCategory(cat)}
-                      className={`w-full text-left px-4 py-2.5 rounded-xl text-sm transition-all ${selectedCategory === cat ? 'bg-indigo-600 text-white font-bold' : 'text-slate-600 hover:bg-slate-50'}`}
-                    >
-                      {cat}
-                    </button>
+                    <button key={cat} onClick={() => setSelectedCategory(cat)} className={`w-full text-left px-5 py-4 rounded-2xl text-sm transition-all font-bold ${selectedCategory === cat ? 'bg-indigo-600 text-white shadow-xl shadow-indigo-100' : 'text-slate-500 hover:bg-slate-50'}`}>{cat}</button>
                   ))}
                 </div>
               </div>
-              <div className="bg-white p-5 rounded-3xl border border-slate-200 shadow-sm">
-                <h3 className="text-xs font-black text-slate-400 uppercase tracking-widest mb-4">日期筛选</h3>
-                <input type="date" value={dateFilter} onChange={(e) => setDateFilter(e.target.value)} className="w-full px-4 py-2.5 bg-slate-50 border border-slate-100 rounded-xl text-sm outline-none" />
+
+              {/* Date Filter */}
+              <div className="bg-white p-8 rounded-[2rem] border border-slate-200 shadow-sm">
+                <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-6">时间范围</h3>
+                <div className="space-y-2">
+                  <button onClick={() => setDateFilter('all')} className={`w-full text-left px-5 py-4 rounded-2xl text-sm transition-all font-bold flex items-center gap-3 ${dateFilter === 'all' ? 'bg-indigo-600 text-white shadow-xl shadow-indigo-100' : 'text-slate-500 hover:bg-slate-50'}`}>
+                    全部时间
+                  </button>
+                  <button onClick={() => setDateFilter('today')} className={`w-full text-left px-5 py-4 rounded-2xl text-sm transition-all font-bold flex items-center gap-3 ${dateFilter === 'today' ? 'bg-indigo-600 text-white shadow-xl shadow-indigo-100' : 'text-slate-500 hover:bg-slate-50'}`}>
+                    <CalendarIcon className="w-4 h-4" /> 今天
+                  </button>
+                  <button onClick={() => setDateFilter('week')} className={`w-full text-left px-5 py-4 rounded-2xl text-sm transition-all font-bold flex items-center gap-3 ${dateFilter === 'week' ? 'bg-indigo-600 text-white shadow-xl shadow-indigo-100' : 'text-slate-500 hover:bg-slate-50'}`}>
+                    <CalendarIcon className="w-4 h-4" /> 最近7天
+                  </button>
+                  <button onClick={() => setDateFilter('month')} className={`w-full text-left px-5 py-4 rounded-2xl text-sm transition-all font-bold flex items-center gap-3 ${dateFilter === 'month' ? 'bg-indigo-600 text-white shadow-xl shadow-indigo-100' : 'text-slate-500 hover:bg-slate-50'}`}>
+                    <CalendarIcon className="w-4 h-4" /> 最近30天
+                  </button>
+                </div>
+              </div>
+
+              {/* Data Management */}
+              <div className="bg-white p-8 rounded-[2rem] border border-slate-200 shadow-sm">
+                <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-6">数据管理</h3>
+                <div className="grid grid-cols-2 gap-3">
+                  <button onClick={exportQuestions} className="flex flex-col items-center gap-2 p-4 bg-slate-50 hover:bg-indigo-50 text-slate-500 hover:text-indigo-600 rounded-2xl transition-all border border-slate-100 hover:border-indigo-100">
+                    <DownloadIcon className="w-6 h-6" />
+                    <span className="text-[10px] font-black uppercase">导出</span>
+                  </button>
+                  <button onClick={() => fileInputRef.current?.click()} className="flex flex-col items-center gap-2 p-4 bg-slate-50 hover:bg-indigo-50 text-slate-500 hover:text-indigo-600 rounded-2xl transition-all border border-slate-100 hover:border-indigo-100">
+                    <UploadIcon className="w-6 h-6" />
+                    <span className="text-[10px] font-black uppercase">导入</span>
+                  </button>
+                  <input type="file" ref={fileInputRef} onChange={handleImport} accept=".json" className="hidden" />
+                </div>
               </div>
             </div>
 
-            <div className="md:col-span-3 space-y-6">
-              <div className="relative group">
-                <SearchIcon className="absolute left-5 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400" />
-                <input 
-                  type="text"
-                  placeholder="搜索题目、公司或关键字..."
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  className="w-full pl-14 pr-6 py-4 bg-white border border-slate-200 rounded-3xl shadow-sm outline-none text-lg font-medium"
-                />
+            <div className="md:col-span-3 space-y-8">
+              <div className="relative">
+                <SearchIcon className="absolute left-7 top-1/2 -translate-y-1/2 w-7 h-7 text-slate-300" />
+                <input type="text" placeholder="搜索题目内容..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} className="w-full pl-16 pr-8 py-6 bg-white border-none rounded-[2.5rem] shadow-xl outline-none text-2xl font-bold focus:ring-8 focus:ring-indigo-50 transition-all" />
               </div>
 
-              <div className="grid grid-cols-1 gap-4">
-                {filteredQuestions.map(q => (
-                  <div 
-                    key={q.id}
-                    onClick={() => handleViewDetail(q)}
-                    className="group bg-white p-6 rounded-3xl border border-slate-200 shadow-sm hover:shadow-xl hover:scale-[1.01] transition-all cursor-pointer relative overflow-hidden"
-                  >
-                    <div className={`absolute left-0 top-0 bottom-0 w-1.5 ${getCategoryColor(q.category)?.split(' ')[1] || 'bg-slate-200'}`} />
-                    <div className="flex justify-between items-start mb-4">
-                      <span className={`text-[10px] font-black px-3 py-1 rounded-full uppercase tracking-widest border ${getCategoryColor(q.category)}`}>
-                        {q.category}
-                      </span>
-                      <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                        <button onClick={(e) => { e.stopPropagation(); handleEdit(q); }} className="p-2 text-slate-400 hover:text-indigo-600"><PencilIcon /></button>
-                        <button onClick={(e) => handleDelete(q.id, e)} className="p-2 text-slate-400 hover:text-red-600"><TrashIcon /></button>
-                      </div>
-                    </div>
-                    <h3 className="text-xl font-bold text-slate-800 line-clamp-2 mb-3 leading-snug">{q.text}</h3>
-                    <div className="flex items-center gap-4 text-xs font-bold text-slate-400">
-                      {q.companyTag && <span className="bg-slate-50 px-2 py-1 rounded-lg">{q.companyTag}</span>}
-                      <span>{formatDate(q.updatedAt)}</span>
-                      {q.isAiGenerated && <span className="text-indigo-500 uppercase tracking-tighter">AI</span>}
-                    </div>
+              <div className="grid grid-cols-1 gap-6">
+                {filteredQuestions.length === 0 ? (
+                  <div className="text-center py-20 bg-white rounded-[2.5rem] border border-dashed border-slate-200">
+                    <p className="text-slate-400 font-bold uppercase tracking-widest text-sm">没有找到匹配的面试题</p>
                   </div>
-                ))}
-              </div>
-            </div>
-          </div>
-        )}
-
-        {view === AppView.MANAGE_CATEGORIES && (
-          <div className="max-w-2xl mx-auto">
-            <button onClick={() => setView(AppView.LIST)} className="flex items-center gap-2 text-slate-400 hover:text-slate-800 transition-colors mb-6 font-bold">
-              <ChevronLeftIcon /> 返回列表
-            </button>
-            <div className="bg-white p-10 rounded-[2.5rem] border border-slate-200 shadow-sm space-y-10">
-              <h2 className="text-3xl font-black text-slate-900">分类管理</h2>
-              <div className="flex gap-3">
-                <input type="text" value={newCatName} onChange={(e) => setNewCatName(e.target.value)} placeholder="输入新分类名称..." className="flex-1 px-6 py-3 bg-slate-50 border border-slate-100 rounded-2xl outline-none font-bold" />
-                <button onClick={handleAddCategory} className="bg-indigo-600 text-white px-8 py-3 rounded-2xl font-black">添加</button>
-              </div>
-              <div className="divide-y divide-slate-100">
-                {categories.map(cat => (
-                  <div key={cat} className="py-5 flex items-center justify-between group">
-                    {editingCat?.old === cat ? (
-                      <div className="flex-1 flex gap-3">
-                        <input autoFocus type="text" value={editingCat.current} onChange={(e) => setEditingCat({...editingCat, current: e.target.value})} className="flex-1 px-4 py-2 bg-indigo-50 rounded-xl outline-none font-bold" />
-                        <button onClick={() => handleRenameCat(editingCat.old, editingCat.current)} className="px-4 py-2 bg-indigo-600 text-white font-black rounded-xl">确定</button>
-                        <button onClick={() => setEditingCat(null)} className="text-xs font-bold text-slate-400">取消</button>
-                      </div>
-                    ) : (
-                      <>
-                        <span className="font-bold text-slate-700 text-lg">{cat}</span>
-                        <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-all">
-                          <button onClick={() => setEditingCat({ old: cat, current: cat })} className="p-2 text-slate-400 hover:text-indigo-600"><PencilIcon /></button>
-                          {cat !== 'Other' && <button onClick={() => handleRemoveCat(cat)} className="p-2 text-slate-400 hover:text-red-600"><TrashIcon /></button>}
+                ) : (
+                  filteredQuestions.map(q => (
+                    <div key={q.id} onClick={() => handleViewDetail(q)} className="group bg-white p-10 rounded-[2.5rem] border border-slate-200 shadow-sm hover:shadow-2xl transition-all cursor-pointer relative overflow-hidden">
+                      <div className={`absolute left-0 top-0 bottom-0 w-2 ${getCategoryColor(q.category).split(' ')[1] || 'bg-indigo-600'}`} />
+                      <div className="flex justify-between items-start mb-6">
+                        <span className={`text-[9px] font-black px-4 py-2 rounded-full uppercase border ${getCategoryColor(q.category)}`}>{q.category}</span>
+                        <div className="flex gap-2 opacity-0 group-hover:opacity-100 transition-all">
+                          <button onClick={(e) => { e.stopPropagation(); handleEdit(q); }} className="p-3 bg-slate-50 hover:bg-indigo-600 text-slate-400 hover:text-white rounded-xl transition-all"><PencilIcon /></button>
+                          <button onClick={(e) => handleDelete(q.id, e)} className="p-3 bg-slate-50 hover:bg-red-600 text-slate-400 hover:text-white rounded-xl transition-all"><TrashIcon /></button>
                         </div>
-                      </>
-                    )}
-                  </div>
-                ))}
+                      </div>
+                      <h3 className="text-3xl font-black text-slate-800 line-clamp-2 mb-6 leading-tight">{q.text}</h3>
+                      <div className="flex items-center gap-8 text-[11px] font-black text-slate-300 uppercase tracking-widest">
+                        {q.companyTag && <span className="bg-slate-50 text-indigo-500 px-4 py-2 rounded-xl border border-slate-100">{q.companyTag}</span>}
+                        <span>{formatDate(q.updatedAt)}</span>
+                        {q.isAiGenerated && <span className="text-indigo-600 font-black">AI ENHANCED</span>}
+                      </div>
+                    </div>
+                  ))
+                )}
               </div>
             </div>
           </div>
         )}
 
         {view === AppView.FORM && (
-          <div className="w-full mx-auto space-y-6">
-            <button onClick={() => setView(AppView.LIST)} className="flex items-center gap-2 text-slate-400 hover:text-slate-800 mb-4 font-bold">
-              <ChevronLeftIcon /> 返回
-            </button>
-            
-            <div className="flex items-start gap-0 relative">
-              {/* Main Content Area */}
-              <div className="flex-1 min-w-0 pr-6">
-                <div className="bg-white p-8 rounded-[2rem] border border-slate-200 shadow-sm space-y-6">
-                  <textarea value={formData.text} onChange={(e) => setFormData({...formData, text: e.target.value})} placeholder="面试题目..." className="w-full px-6 py-5 bg-slate-50 border border-slate-100 rounded-3xl min-h-[120px] outline-none text-xl font-bold" />
-                  <div className="grid grid-cols-2 gap-6">
-                    <select value={formData.category} onChange={(e) => setFormData({...formData, category: e.target.value})} className="w-full px-5 py-3.5 bg-slate-50 border border-slate-100 rounded-2xl outline-none font-bold">
+          <div className="w-full">
+            <button onClick={() => setView(AppView.LIST)} className="flex items-center gap-3 text-slate-400 hover:text-indigo-600 font-black text-sm uppercase mb-10 transition-all"><ChevronLeftIcon /> 返回列表</button>
+            <div className="flex items-stretch gap-0 h-[800px] relative">
+              <div className="flex-1 min-w-0 pr-10 overflow-y-auto no-scrollbar">
+                <div className="bg-white p-14 rounded-[4rem] border border-slate-200 shadow-xl space-y-12">
+                  <textarea value={formData.text} onChange={(e) => setFormData({...formData, text: e.target.value})} placeholder="输入题目核心..." className="w-full px-10 py-8 bg-slate-50 border-none rounded-[3rem] min-h-[160px] outline-none text-4xl font-black focus:bg-white focus:ring-[12px] focus:ring-indigo-50 transition-all" />
+                  <div className="grid grid-cols-2 gap-12">
+                    <select value={formData.category} onChange={(e) => setFormData({...formData, category: e.target.value})} className="w-full px-10 py-6 bg-slate-50 rounded-[2rem] outline-none font-black appearance-none focus:ring-4 focus:ring-indigo-50 transition-all">
                       {categories.map(c => <option key={c} value={c}>{c}</option>)}
                     </select>
-                    <input type="text" value={formData.companyTag} onChange={(e) => setFormData({...formData, companyTag: e.target.value})} placeholder="公司标签..." className="w-full px-5 py-3.5 bg-slate-50 border border-slate-100 rounded-2xl outline-none font-bold" />
+                    <input type="text" value={formData.companyTag} onChange={(e) => setFormData({...formData, companyTag: e.target.value})} placeholder="公司标签..." className="w-full px-10 py-6 bg-slate-50 rounded-[2rem] outline-none font-black focus:bg-white transition-all" />
                   </div>
-                  <div className="space-y-2 pt-4">
-                    <div className="flex justify-between items-center mb-1">
-                      <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em]">答案详情</label>
-                      <button onClick={handleGenerateAnswer} disabled={isGenerating || !formData.text.trim()} className="flex items-center gap-2 text-xs font-black text-indigo-600">
-                        {isGenerating ? '正在生成...' : <><SparklesIcon className="w-4 h-4" /> AI 生成答案</>}
+                  <div className="space-y-5">
+                    <div className="flex justify-between items-center mb-2 px-4">
+                      <label className="text-[11px] font-black text-slate-400 uppercase tracking-widest">标准答案 (支持 LaTeX)</label>
+                      <button onClick={handleGenerateAnswer} disabled={isGenerating || !formData.text.trim()} className="flex items-center gap-3 text-xs font-black text-white bg-indigo-600 px-8 py-4 rounded-2xl shadow-indigo-100 hover:scale-105 transition-all disabled:opacity-40">
+                        {isGenerating ? 'AI 推演中...' : <><SparklesIcon className="w-5 h-5" /> AI 生成推导过程</>}
                       </button>
                     </div>
-                    <textarea value={formData.answer} onChange={(e) => setFormData({...formData, answer: e.target.value})} placeholder="输入答案..." className="w-full px-6 py-6 bg-slate-50 border border-slate-100 rounded-3xl min-h-[400px] outline-none font-medium leading-relaxed" />
+                    <textarea value={formData.answer} onChange={(e) => setFormData({...formData, answer: e.target.value})} placeholder="在此处输入解析，公式请用 $ 包裹..." className="w-full px-12 py-12 bg-slate-50 rounded-[3.5rem] min-h-[500px] outline-none font-medium text-xl leading-relaxed text-slate-700 focus:bg-white transition-all" />
                   </div>
-                  <div className="flex justify-end gap-3 pt-6">
-                    <button onClick={() => setView(AppView.LIST)} className="px-8 py-3.5 border border-slate-200 rounded-2xl font-bold">取消</button>
-                    <button onClick={handleSave} className="px-10 py-3.5 bg-indigo-600 text-white rounded-2xl font-black shadow-xl">保存题目</button>
+                  <div className="flex justify-end gap-5">
+                    <button onClick={() => setView(AppView.LIST)} className="px-14 py-6 border border-slate-100 rounded-[2rem] font-black uppercase text-slate-400 hover:bg-slate-50 transition-all">取消</button>
+                    <button onClick={handleSave} className="px-20 py-6 bg-slate-900 text-white rounded-[2.2rem] font-black shadow-2xl hover:bg-indigo-600 transition-all active:scale-95">确认保存</button>
                   </div>
                 </div>
               </div>
-
-              {/* Resize handle */}
+              
               <div 
-                className="w-1.5 hover:bg-indigo-400 cursor-col-resize self-stretch transition-colors rounded-full z-10 mx-1"
-                onMouseDown={startResizing}
-              ></div>
-
-              {/* AI Assistant Sidebar Area */}
-              <div 
-                className="bg-white rounded-[2rem] border border-slate-200 shadow-sm flex flex-col h-[750px] overflow-hidden sticky top-8 shrink-0"
-                style={{ width: `${sidebarWidth}px` }}
+                className="group w-8 -mx-4 cursor-col-resize z-30 flex items-center justify-center" 
+                onMouseDown={(e) => { e.preventDefault(); setIsDragging(true); dragStartX.current = e.clientX; initialWidth.current = sidebarWidth; }}
               >
-                <div className="p-6 border-b border-slate-100 flex items-center gap-2"><SparklesIcon className="w-5 h-5 text-indigo-600" /><h3 className="font-black">AI 助理</h3></div>
-                <div className="flex-1 overflow-y-auto p-6 space-y-5 bg-slate-50/30">
+                <div className={`w-1.5 h-32 rounded-full transition-all ${isDragging ? 'bg-indigo-600 h-64' : 'bg-slate-300 group-hover:bg-indigo-500'}`} />
+              </div>
+
+              <div 
+                className={`bg-white rounded-[4rem] border border-slate-200 shadow-2xl flex flex-col overflow-hidden shrink-0 transition-[width] duration-300 relative`} 
+                style={{ width: isSidebarExpanded ? '92%' : `${sidebarWidth}px` }}
+              >
+                <div className="p-10 border-b flex items-center justify-between bg-white/50 backdrop-blur-md">
+                  <h3 className="font-black text-slate-800 text-xl flex items-center gap-3"><SparklesIcon className="text-indigo-600" /> AI 对话解析助手</h3>
+                  <button onClick={() => setIsSidebarExpanded(!isSidebarExpanded)} className="text-slate-300 hover:text-indigo-600 transition-all">
+                    {isSidebarExpanded ? <ChevronLeftIcon className="rotate-180" /> : <PlusIcon className="rotate-45" />}
+                  </button>
+                </div>
+                <div className="flex-1 overflow-y-auto p-12 space-y-10 bg-slate-50/20 no-scrollbar pb-32">
+                  {chatHistory.length === 0 && (
+                    <div className="text-center py-24 opacity-30 flex flex-col items-center">
+                       <SparklesIcon className="w-16 h-16 mb-6 text-slate-300" />
+                       <p className="font-black text-sm uppercase tracking-widest">开始对话 以深入探讨原理细节</p>
+                    </div>
+                  )}
                   {chatHistory.map((msg, i) => (
-                    <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                      <MathContent 
-                        content={msg.text} 
-                        className={`max-w-[95%] px-4 py-3 rounded-2xl text-sm ${msg.role === 'user' ? 'bg-indigo-600 text-white' : 'bg-white border border-slate-100 text-slate-700 font-medium'}`} 
-                      />
+                    <div key={i} className={`flex flex-col ${msg.role === 'user' ? 'items-end' : 'items-start'}`}>
+                      <div className={`max-w-[96%] shadow-sm ${msg.role === 'user' ? 'bg-indigo-600 text-white rounded-[2.2rem] rounded-tr-none' : 'bg-white border border-slate-100 text-slate-800 rounded-[2.8rem] rounded-tl-none'} px-10 py-8`}>
+                        <MathContent content={msg.text} className={`text-lg leading-[1.6] ${msg.role === 'model' ? 'font-medium' : 'font-bold'}`} />
+                      </div>
+                      {msg.sources && msg.sources.length > 0 && (
+                        <div className="mt-2 ml-4 self-start">
+                          <SourceList sources={msg.sources} />
+                        </div>
+                      )}
                     </div>
                   ))}
-                  {isChatLoading && <div className="text-xs text-slate-400 animate-pulse">AI 正在思考...</div>}
+                  {isChatLoading && (
+                    <div className="flex justify-start">
+                      <div className="bg-white border border-slate-100 px-8 py-4 rounded-[2rem] text-xs font-black text-slate-400 animate-pulse uppercase">AI 推演逻辑中...</div>
+                    </div>
+                  )}
                   <div ref={chatEndRef} />
                 </div>
-                <div className="p-6 bg-white border-t border-slate-100 flex gap-2">
-                  <input type="text" value={chatInput} onChange={(e) => setChatInput(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleChatSend()} placeholder="向 AI 提问..." className="flex-1 bg-slate-50 rounded-2xl px-5 py-3.5 text-sm outline-none font-bold" />
-                  <button onClick={handleChatSend} className="bg-indigo-600 text-white p-3 rounded-2xl shadow-lg active:scale-90"><PlusIcon /></button>
+                <div className="absolute bottom-0 left-0 right-0 p-10 bg-white/80 backdrop-blur-md border-t">
+                  <div className="flex gap-5">
+                    <input type="text" value={chatInput} onChange={(e) => setChatInput(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleChatSend()} placeholder="追问详细推导过程..." className="flex-1 bg-slate-100 border-none rounded-[1.8rem] px-10 py-6 text-lg outline-none font-bold focus:bg-white transition-all shadow-inner" />
+                    <button onClick={handleChatSend} disabled={isChatLoading || !chatInput.trim()} className="bg-slate-900 text-white p-6 rounded-[1.8rem] shadow-xl hover:bg-indigo-600 transition-all disabled:opacity-30"><PlusIcon /></button>
+                  </div>
                 </div>
               </div>
             </div>
@@ -519,26 +501,23 @@ const App: React.FC = () => {
         )}
 
         {view === AppView.DETAIL && currentQuestion && (
-          <div className="max-w-4xl mx-auto">
-            <button onClick={() => setView(AppView.LIST)} className="flex items-center gap-2 text-slate-400 hover:text-slate-800 mb-6 font-bold"><ChevronLeftIcon /> 返回列表</button>
-            <article className="bg-white p-12 rounded-[3rem] border border-slate-200 shadow-sm space-y-8">
-              <div className="flex justify-between">
-                <span className={`text-[10px] font-black px-4 py-1.5 rounded-full uppercase border ${getCategoryColor(currentQuestion.category)}`}>{currentQuestion.category}</span>
-                <div className="flex gap-2">
-                  <button onClick={() => handleEdit(currentQuestion)} className="p-2.5 text-slate-300 hover:text-indigo-600"><PencilIcon /></button>
-                  <button onClick={() => handleDelete(currentQuestion.id)} className="p-2.5 text-slate-300 hover:text-red-600"><TrashIcon /></button>
-                </div>
+          <div className="max-w-6xl mx-auto">
+            <button onClick={() => setView(AppView.LIST)} className="flex items-center gap-3 text-slate-400 hover:text-indigo-600 mb-10 font-black uppercase text-sm tracking-widest transition-all"><ChevronLeftIcon /> 返回题库列表</button>
+            <article className="bg-white p-20 rounded-[4.5rem] border border-slate-200 shadow-2xl space-y-14">
+              <span className={`text-[10px] font-black px-6 py-3 rounded-full uppercase border ${getCategoryColor(currentQuestion.category)}`}>{currentQuestion.category}</span>
+              <h2 className="text-6xl font-black text-slate-900 leading-tight tracking-tighter">{currentQuestion.text}</h2>
+              <div className="flex gap-10 text-[11px] font-black text-slate-300 uppercase pb-14 border-b">
+                {currentQuestion.companyTag && <div className="flex items-center gap-3 bg-slate-50 text-indigo-600 px-8 py-4 rounded-2xl border"><BuildingIcon />{currentQuestion.companyTag}</div>}
+                <div className="flex items-center gap-3"><CalendarIcon /> 更新于 {formatDate(currentQuestion.updatedAt)}</div>
               </div>
-              <h2 className="text-4xl font-black text-slate-900 leading-tight">{currentQuestion.text}</h2>
-              <div className="flex flex-wrap items-center gap-4 text-xs font-bold text-slate-400 pb-8 border-b border-slate-100">
-                {currentQuestion.companyTag && <span className="bg-slate-50 px-4 py-2 rounded-xl">{currentQuestion.companyTag}</span>}
-                <span>更新于 {formatDate(currentQuestion.updatedAt)}</span>
-                {currentQuestion.isAiGenerated && <span className="text-indigo-600 bg-indigo-50 px-3 py-1.5 rounded-xl border border-indigo-100">AI 联网生成</span>}
+              <div className="pt-6">
+                <MathContent content={currentQuestion.answer || "暂无记录解析内容。"} className="text-slate-700 bg-slate-50/40 p-16 rounded-[4rem] text-[1.6rem] font-medium leading-relaxed" />
               </div>
-              <div className="prose prose-slate max-w-none pt-4">
-                <MathContent content={currentQuestion.answer || "暂无回答记录。"} className="whitespace-pre-wrap text-slate-700 leading-relaxed bg-slate-50/50 p-10 rounded-[2.5rem] border border-slate-100 text-lg font-medium" />
+              {currentQuestion.sources && <SourceList sources={currentQuestion.sources} />}
+              <div className="flex justify-end gap-5 pt-10">
+                <button onClick={() => handleEdit(currentQuestion)} className="flex items-center gap-2 px-8 py-4 bg-indigo-600 text-white rounded-2xl font-black text-sm shadow-xl hover:bg-indigo-700 transition-all"><PencilIcon className="w-4 h-4" /> 编辑题目</button>
+                <button onClick={() => handleDelete(currentQuestion.id)} className="flex items-center gap-2 px-8 py-4 border border-red-100 text-red-500 rounded-2xl font-black text-sm hover:bg-red-50 transition-all"><TrashIcon className="w-4 h-4" /> 删除题目</button>
               </div>
-              {currentQuestion.sources && currentQuestion.sources.length > 0 && <SourceList sources={currentQuestion.sources} />}
             </article>
           </div>
         )}

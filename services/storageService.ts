@@ -5,9 +5,6 @@ const STORAGE_KEY = 'interview_prep_questions_v1';
 const CATEGORIES_KEY = 'interview_prep_categories_v1';
 const DATA_FILE_URL = '/data/interview_questions.json';
 
-/**
- * 获取分类列表
- */
 export const getCategories = (): string[] => {
   const stored = localStorage.getItem(CATEGORIES_KEY);
   if (stored) {
@@ -16,16 +13,10 @@ export const getCategories = (): string[] => {
   return DEFAULT_CATEGORIES;
 };
 
-/**
- * 保存分类列表
- */
 export const saveCategories = (categories: string[]) => {
   localStorage.setItem(CATEGORIES_KEY, JSON.stringify(categories));
 };
 
-/**
- * 获取所有面试题
- */
 export const getQuestions = (): Question[] => {
   try {
     const stored = localStorage.getItem(STORAGE_KEY);
@@ -39,9 +30,6 @@ export const getQuestions = (): Question[] => {
   }
 };
 
-/**
- * 重命名分类并更新关联题目
- */
 export const renameCategory = (oldName: string, newName: string) => {
   const categories = getCategories();
   const index = categories.indexOf(oldName);
@@ -64,9 +52,6 @@ export const renameCategory = (oldName: string, newName: string) => {
   }
 };
 
-/**
- * 删除分类并将题目设为 Other
- */
 export const removeCategory = (name: string) => {
   const categories = getCategories().filter(c => c !== name);
   saveCategories(categories);
@@ -134,4 +119,17 @@ export const importQuestions = async (newQuestions: Question[]): Promise<void> =
   
   const merged = Array.from(currentMap.values()).sort((a, b) => b.createdAt - a.createdAt);
   localStorage.setItem(STORAGE_KEY, JSON.stringify(merged));
+};
+
+export const exportQuestions = () => {
+  const data = getQuestions();
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `interview_questions_${new Date().toISOString().split('T')[0]}.json`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
 };
