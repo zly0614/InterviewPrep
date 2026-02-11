@@ -17,6 +17,35 @@ import { generateInterviewAnswer, autoCategorize, createAiChatSession } from './
 import { PlusIcon, ChevronLeftIcon, SparklesIcon, TrashIcon, PencilIcon, DownloadIcon, UploadIcon, SearchIcon, CalendarIcon, BuildingIcon, ExcelIcon, MarkdownIcon } from './components/Icons';
 import { SourceList } from './components/SourceList';
 
+const formatDate = (timestamp: number) => {
+  return new Date(timestamp).toLocaleDateString();
+};
+
+// Component to handle KaTeX rendering
+const MathContent: React.FC<{ content: string; className?: string }> = ({ content, className }) => {
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (containerRef.current && (window as any).renderMathInElement) {
+      (window as any).renderMathInElement(containerRef.current, {
+        delimiters: [
+          { left: '$$', right: '$$', display: true },
+          { left: '$', right: '$', display: false },
+          { left: '\\(', right: '\\)', display: false },
+          { left: '\\[', right: '\\]', display: true }
+        ],
+        throwOnError: false
+      });
+    }
+  }, [content]);
+
+  return (
+    <div ref={containerRef} className={className}>
+      {content}
+    </div>
+  );
+};
+
 const App: React.FC = () => {
   const [view, setView] = useState<AppView>(AppView.LIST);
   const [questions, setQuestions] = useState<Question[]>([]);
@@ -26,6 +55,10 @@ const App: React.FC = () => {
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [dateFilter, setDateFilter] = useState<string>('');
   
+  // Resizing state
+  const [sidebarWidth, setSidebarWidth] = useState(380);
+  const isResizing = useRef(false);
+
   const fileInputRef = useRef<HTMLInputElement>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
   
@@ -54,19 +87,49 @@ const App: React.FC = () => {
   // 初始化加载
   useEffect(() => {
     const init = async () => {
-      // 1. 尝试加载项目预设数据
       const projectData = await loadInitialDataFromProject();
       if (projectData && projectData.length > 0) {
-        await importQuestions(projectData);
+        const localData = getQuestions();
+        if (localData.length === 0) {
+          await importQuestions(projectData);
+        }
       }
-      
-      // 2. 刷新视图
       refreshAll();
     };
     init();
   }, []);
 
-  // 聊天自动滚动
+  // Handle Resizing logic
+  useEffect(() => {
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!isResizing.current) return;
+      // Calculate from the right edge
+      const newWidth = window.innerWidth - e.clientX - 24; // 24 is roughly the gap/padding
+      if (newWidth >= 300 && newWidth <= 800) {
+        setSidebarWidth(newWidth);
+      }
+    };
+
+    const handleMouseUp = () => {
+      isResizing.current = false;
+      document.body.style.cursor = 'default';
+      document.body.style.userSelect = 'auto';
+    };
+
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, []);
+
+  const startResizing = (e: React.MouseEvent) => {
+    isResizing.current = true;
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+  };
+
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [chatHistory]);
@@ -167,33 +230,25 @@ const App: React.FC = () => {
   };
 
   const handleRemoveCat = (name: string) => {
-    if (name === 'Other') {
-      alert('不能删除默认分类 Other');
-      return;
-    }
+    if (name === 'Other') return;
     if (confirm(`确定要删除分类 "${name}" 吗？该分类下的题目将自动归为 Other。`)) {
       removeCategory(name);
       refreshAll();
     }
   };
 
-  // AI 聊天处理
   const handleChatSend = async () => {
     if (!chatInput.trim() || isChatLoading) return;
-    
     if (!chatSessionRef.current) {
       chatSessionRef.current = createAiChatSession(formData.text, formData.answer);
     }
-
     const userMessage = chatInput;
     setChatInput('');
     setChatHistory(prev => [...prev, { role: 'user', text: userMessage }]);
     setIsChatLoading(true);
-
     try {
       const result = await chatSessionRef.current.sendMessage({ message: userMessage });
-      const modelText = result.text || "No response received.";
-      setChatHistory(prev => [...prev, { role: 'model', text: modelText }]);
+      setChatHistory(prev => [...prev, { role: 'model', text: result.text || "AI 暂时无法回答。" }]);
     } catch (error) {
       setChatHistory(prev => [...prev, { role: 'model', text: "抱歉，我遇到了点问题，请稍后再试。" }]);
     } finally {
@@ -202,10 +257,7 @@ const App: React.FC = () => {
   };
 
   const handleGenerateAnswer = async () => {
-    if (!formData.text.trim()) {
-      alert('请先输入题目');
-      return;
-    }
+    if (!formData.text.trim()) return;
     setIsGenerating(true);
     try {
       const result = await generateInterviewAnswer(formData.text);
@@ -217,7 +269,7 @@ const App: React.FC = () => {
         sources: result.sources
       }));
     } catch (error) {
-      alert('生成答案失败，请检查网络或 API 配置');
+      alert('生成答案失败');
     } finally {
       setIsGenerating(false);
     }
@@ -230,27 +282,6 @@ const App: React.FC = () => {
     XLSX.writeFile(wb, "interview_questions.xlsx");
   };
 
-  const handleExportMarkdown = () => {
-    let md = "# Interview Questions\n\n";
-    questions.forEach(q => {
-      md += `## [${q.category}] ${q.text}\n\n`;
-      if (q.companyTag) md += `**Company:** ${q.companyTag}\n\n`;
-      md += `### Answer\n${q.answer}\n\n`;
-      if (q.sources && q.sources.length > 0) {
-        md += `### Sources\n`;
-        q.sources.forEach(s => md += `- [${s.web?.title}](${s.web?.uri})\n`);
-        md += `\n`;
-      }
-      md += `---\n\n`;
-    });
-    const blob = new Blob([md], { type: 'text/markdown' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = "questions.md";
-    a.click();
-  };
-
   const handleImportClick = () => {
     fileInputRef.current?.click();
   };
@@ -258,7 +289,6 @@ const App: React.FC = () => {
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-
     const reader = new FileReader();
     reader.onload = async (event) => {
       try {
@@ -267,24 +297,12 @@ const App: React.FC = () => {
           const parsed = JSON.parse(data as string);
           await importQuestions(parsed);
           refreshAll();
-        } else if (file.name.endsWith('.xlsx') || file.name.endsWith('.xls')) {
-          const workbook = XLSX.read(data, { type: 'binary' });
-          const sheetName = workbook.SheetNames[0];
-          const sheet = workbook.Sheets[sheetName];
-          const json = XLSX.utils.sheet_to_json(sheet);
-          await importQuestions(json as Question[]);
-          refreshAll();
         }
       } catch (err) {
-        alert('导入失败，请检查文件格式');
+        alert('导入失败');
       }
     };
-
-    if (file.name.endsWith('.json')) {
-      reader.readAsText(file);
-    } else {
-      reader.readAsBinaryString(file);
-    }
+    reader.readAsText(file);
   };
 
   const filteredQuestions = useMemo(() => {
@@ -297,49 +315,27 @@ const App: React.FC = () => {
     });
   }, [questions, selectedCategory, searchQuery, dateFilter]);
 
-  const formatDate = (ts: number) => new Date(ts).toLocaleDateString();
-
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 font-sans pb-10">
       <div className="max-w-6xl mx-auto px-4 py-8">
         <header className="mb-8 flex flex-col md:flex-row md:items-center justify-between gap-4">
           <div>
             <h1 className="text-3xl font-bold bg-gradient-to-r from-indigo-600 to-purple-600 bg-clip-text text-transparent">Interview Master</h1>
-            <p className="text-slate-500 mt-1">AI-powered interview preparation toolkit</p>
+            <p className="text-slate-500 mt-1">AI 驱动的面试题库记录工具</p>
           </div>
           <div className="flex items-center gap-2">
-            <button 
-              onClick={handleImportClick}
-              className="p-2 text-slate-600 hover:bg-slate-200 rounded-lg transition-colors"
-              title="Import Questions"
-            >
+            <button onClick={handleImportClick} className="p-2 text-slate-600 hover:bg-slate-200 rounded-lg transition-colors">
               <UploadIcon />
             </button>
-            <input 
-              type="file" 
-              ref={fileInputRef} 
-              onChange={handleFileChange} 
-              className="hidden" 
-              accept=".json,.xlsx,.xls"
-            />
-            <div className="relative group">
-              <button className="p-2 text-slate-600 hover:bg-slate-200 rounded-lg transition-colors">
-                <DownloadIcon />
-              </button>
-              <div className="absolute right-0 mt-2 w-48 bg-white border border-slate-200 rounded-xl shadow-xl opacity-0 group-hover:opacity-100 pointer-events-none group-hover:pointer-events-auto transition-all z-10">
-                <button onClick={handleExportExcel} className="w-full flex items-center gap-2 px-4 py-2 hover:bg-slate-50 text-sm">
-                  <ExcelIcon /> Export Excel
-                </button>
-                <button onClick={handleExportMarkdown} className="w-full flex items-center gap-2 px-4 py-2 hover:bg-slate-50 text-sm">
-                  <MarkdownIcon /> Export Markdown
-                </button>
-              </div>
-            </div>
+            <input type="file" ref={fileInputRef} onChange={handleFileChange} className="hidden" accept=".json" />
+            <button onClick={handleExportExcel} className="p-2 text-slate-600 hover:bg-slate-200 rounded-lg transition-colors">
+              <ExcelIcon />
+            </button>
             <button 
               onClick={handleCreateNew}
-              className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-xl transition-all shadow-md hover:shadow-lg"
+              className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white px-5 py-2.5 rounded-xl transition-all shadow-md hover:shadow-lg font-bold"
             >
-              <PlusIcon /> New Question
+              <PlusIcon /> 新增题目
             </button>
           </div>
         </header>
@@ -347,187 +343,105 @@ const App: React.FC = () => {
         {view === AppView.LIST && (
           <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
             <div className="md:col-span-1 space-y-6">
-              <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm">
+              <div className="bg-white p-5 rounded-3xl border border-slate-200 shadow-sm">
                 <div className="flex items-center justify-between mb-4">
-                  <h3 className="text-sm font-semibold text-slate-500 uppercase tracking-wider">Categories</h3>
-                  <button 
-                    onClick={() => setView(AppView.MANAGE_CATEGORIES)}
-                    className="p-1 text-slate-400 hover:text-indigo-600 rounded-md hover:bg-indigo-50 transition-colors"
-                    title="Manage Categories"
-                  >
+                  <h3 className="text-xs font-black text-slate-400 uppercase tracking-widest">题库分类</h3>
+                  <button onClick={() => setView(AppView.MANAGE_CATEGORIES)} className="p-1.5 text-slate-400 hover:text-indigo-600 rounded-lg hover:bg-indigo-50 transition-colors">
                     <PencilIcon />
                   </button>
                 </div>
-                <div className="space-y-1">
+                <div className="space-y-1.5">
                   <button
                     onClick={() => setSelectedCategory('All')}
-                    className={`w-full text-left px-3 py-2 rounded-lg text-sm transition-colors ${
-                      selectedCategory === 'All' 
-                        ? 'bg-indigo-50 text-indigo-700 font-medium' 
-                        : 'text-slate-600 hover:bg-slate-50'
-                    }`}
+                    className={`w-full text-left px-4 py-2.5 rounded-xl text-sm transition-all ${selectedCategory === 'All' ? 'bg-indigo-600 text-white font-bold' : 'text-slate-600 hover:bg-slate-50'}`}
                   >
-                    All
+                    全部题目
                   </button>
                   {categories.map(cat => (
                     <button
                       key={cat}
                       onClick={() => setSelectedCategory(cat)}
-                      className={`w-full text-left px-3 py-2 rounded-lg text-sm transition-colors ${
-                        selectedCategory === cat 
-                          ? 'bg-indigo-50 text-indigo-700 font-medium' 
-                          : 'text-slate-600 hover:bg-slate-50'
-                      }`}
+                      className={`w-full text-left px-4 py-2.5 rounded-xl text-sm transition-all ${selectedCategory === cat ? 'bg-indigo-600 text-white font-bold' : 'text-slate-600 hover:bg-slate-50'}`}
                     >
                       {cat}
                     </button>
                   ))}
                 </div>
               </div>
-              
-              <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm">
-                <h3 className="text-sm font-semibold text-slate-500 uppercase tracking-wider mb-4">Filters</h3>
-                <div>
-                  <label className="text-xs text-slate-400 block mb-1">Created Date</label>
-                  <div className="relative">
-                    <CalendarIcon className="absolute left-3 top-2.5 w-4 h-4 text-slate-400" />
-                    <input 
-                      type="date" 
-                      value={dateFilter}
-                      onChange={(e) => setDateFilter(e.target.value)}
-                      className="w-full pl-9 pr-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 outline-none transition-all"
-                    />
-                  </div>
-                </div>
+              <div className="bg-white p-5 rounded-3xl border border-slate-200 shadow-sm">
+                <h3 className="text-xs font-black text-slate-400 uppercase tracking-widest mb-4">日期筛选</h3>
+                <input type="date" value={dateFilter} onChange={(e) => setDateFilter(e.target.value)} className="w-full px-4 py-2.5 bg-slate-50 border border-slate-100 rounded-xl text-sm outline-none" />
               </div>
             </div>
 
-            <div className="md:col-span-3 space-y-4">
-              <div className="relative">
-                <SearchIcon className="absolute left-4 top-3.5 w-5 h-5 text-slate-400" />
+            <div className="md:col-span-3 space-y-6">
+              <div className="relative group">
+                <SearchIcon className="absolute left-5 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400" />
                 <input 
                   type="text"
-                  placeholder="Search questions or companies..."
+                  placeholder="搜索题目、公司或关键字..."
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  className="w-full pl-12 pr-4 py-3 bg-white border border-slate-200 rounded-2xl shadow-sm focus:ring-2 focus:ring-indigo-500 outline-none transition-all"
+                  className="w-full pl-14 pr-6 py-4 bg-white border border-slate-200 rounded-3xl shadow-sm outline-none text-lg font-medium"
                 />
               </div>
 
-              {filteredQuestions.length > 0 ? (
-                <div className="grid grid-cols-1 gap-4">
-                  {filteredQuestions.map(q => (
-                    <div 
-                      key={q.id}
-                      onClick={() => handleViewDetail(q)}
-                      className="group bg-white p-5 rounded-2xl border border-slate-200 shadow-sm hover:shadow-md transition-all cursor-pointer relative overflow-hidden"
-                    >
-                      <div className={`absolute left-0 top-0 bottom-0 w-1 ${getCategoryColor(q.category)?.split(' ')[1] || 'bg-slate-200'}`} />
-                      <div className="flex justify-between items-start mb-2">
-                        <span className={`text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider border ${getCategoryColor(q.category)}`}>
-                          {q.category}
-                        </span>
-                        <div className="flex items-center gap-1">
-                          {q.isAiGenerated && <SparklesIcon className="w-4 h-4 text-indigo-500" />}
-                          <button 
-                            onClick={(e) => { e.stopPropagation(); handleEdit(q); }}
-                            className="p-1.5 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors"
-                          >
-                            <PencilIcon />
-                          </button>
-                          <button 
-                            onClick={(e) => handleDelete(q.id, e)}
-                            className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
-                          >
-                            <TrashIcon />
-                          </button>
-                        </div>
-                      </div>
-                      <h3 className="text-lg font-semibold text-slate-800 line-clamp-2 mb-2 group-hover:text-indigo-600 transition-colors">
-                        {q.text}
-                      </h3>
-                      <div className="flex items-center gap-4 text-xs text-slate-400">
-                        {q.companyTag && (
-                          <span className="flex items-center gap-1">
-                            <BuildingIcon className="w-3 h-3" /> {q.companyTag}
-                          </span>
-                        )}
-                        <span>Updated {formatDate(q.updatedAt)}</span>
+              <div className="grid grid-cols-1 gap-4">
+                {filteredQuestions.map(q => (
+                  <div 
+                    key={q.id}
+                    onClick={() => handleViewDetail(q)}
+                    className="group bg-white p-6 rounded-3xl border border-slate-200 shadow-sm hover:shadow-xl hover:scale-[1.01] transition-all cursor-pointer relative overflow-hidden"
+                  >
+                    <div className={`absolute left-0 top-0 bottom-0 w-1.5 ${getCategoryColor(q.category)?.split(' ')[1] || 'bg-slate-200'}`} />
+                    <div className="flex justify-between items-start mb-4">
+                      <span className={`text-[10px] font-black px-3 py-1 rounded-full uppercase tracking-widest border ${getCategoryColor(q.category)}`}>
+                        {q.category}
+                      </span>
+                      <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <button onClick={(e) => { e.stopPropagation(); handleEdit(q); }} className="p-2 text-slate-400 hover:text-indigo-600"><PencilIcon /></button>
+                        <button onClick={(e) => handleDelete(q.id, e)} className="p-2 text-slate-400 hover:text-red-600"><TrashIcon /></button>
                       </div>
                     </div>
-                  ))}
-                </div>
-              ) : (
-                <div className="text-center py-20 bg-white rounded-2xl border border-dashed border-slate-300">
-                  <p className="text-slate-400">No questions found. Try a different filter or create one!</p>
-                </div>
-              )}
+                    <h3 className="text-xl font-bold text-slate-800 line-clamp-2 mb-3 leading-snug">{q.text}</h3>
+                    <div className="flex items-center gap-4 text-xs font-bold text-slate-400">
+                      {q.companyTag && <span className="bg-slate-50 px-2 py-1 rounded-lg">{q.companyTag}</span>}
+                      <span>{formatDate(q.updatedAt)}</span>
+                      {q.isAiGenerated && <span className="text-indigo-500 uppercase tracking-tighter">AI</span>}
+                    </div>
+                  </div>
+                ))}
+              </div>
             </div>
           </div>
         )}
 
         {view === AppView.MANAGE_CATEGORIES && (
           <div className="max-w-2xl mx-auto">
-            <button onClick={() => setView(AppView.LIST)} className="flex items-center gap-2 text-slate-500 hover:text-slate-800 transition-colors mb-6">
-              <ChevronLeftIcon /> Back to list
+            <button onClick={() => setView(AppView.LIST)} className="flex items-center gap-2 text-slate-400 hover:text-slate-800 transition-colors mb-6 font-bold">
+              <ChevronLeftIcon /> 返回列表
             </button>
-            <div className="bg-white p-8 rounded-3xl border border-slate-200 shadow-sm space-y-8">
-              <div>
-                <h2 className="text-2xl font-bold text-slate-900">Manage Categories</h2>
-                <p className="text-sm text-slate-500 mt-1">Add, rename or remove categories. Note: Renaming will update all associated questions.</p>
+            <div className="bg-white p-10 rounded-[2.5rem] border border-slate-200 shadow-sm space-y-10">
+              <h2 className="text-3xl font-black text-slate-900">分类管理</h2>
+              <div className="flex gap-3">
+                <input type="text" value={newCatName} onChange={(e) => setNewCatName(e.target.value)} placeholder="输入新分类名称..." className="flex-1 px-6 py-3 bg-slate-50 border border-slate-100 rounded-2xl outline-none font-bold" />
+                <button onClick={handleAddCategory} className="bg-indigo-600 text-white px-8 py-3 rounded-2xl font-black">添加</button>
               </div>
-
-              <div className="flex gap-2">
-                <input 
-                  type="text" 
-                  value={newCatName}
-                  onChange={(e) => setNewCatName(e.target.value)}
-                  placeholder="New category name..."
-                  className="flex-1 px-4 py-2 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none"
-                />
-                <button 
-                  onClick={handleAddCategory}
-                  className="bg-indigo-600 text-white px-4 py-2 rounded-xl hover:bg-indigo-700 transition-all font-bold"
-                >
-                  Add
-                </button>
-              </div>
-
               <div className="divide-y divide-slate-100">
                 {categories.map(cat => (
-                  <div key={cat} className="py-4 flex items-center justify-between group">
+                  <div key={cat} className="py-5 flex items-center justify-between group">
                     {editingCat?.old === cat ? (
-                      <div className="flex-1 flex gap-2">
-                        <input 
-                          autoFocus
-                          type="text" 
-                          value={editingCat.current}
-                          onChange={(e) => setEditingCat({...editingCat, current: e.target.value})}
-                          onKeyDown={(e) => e.key === 'Enter' && handleRenameCat(editingCat.old, editingCat.current)}
-                          className="flex-1 px-3 py-1 border border-indigo-500 rounded-lg outline-none text-sm"
-                        />
-                        <button onClick={() => handleRenameCat(editingCat.old, editingCat.current)} className="text-xs font-bold text-indigo-600">Save</button>
-                        <button onClick={() => setEditingCat(null)} className="text-xs font-bold text-slate-400">Cancel</button>
+                      <div className="flex-1 flex gap-3">
+                        <input autoFocus type="text" value={editingCat.current} onChange={(e) => setEditingCat({...editingCat, current: e.target.value})} className="flex-1 px-4 py-2 bg-indigo-50 rounded-xl outline-none font-bold" />
+                        <button onClick={() => handleRenameCat(editingCat.old, editingCat.current)} className="px-4 py-2 bg-indigo-600 text-white font-black rounded-xl">确定</button>
+                        <button onClick={() => setEditingCat(null)} className="text-xs font-bold text-slate-400">取消</button>
                       </div>
                     ) : (
                       <>
-                        <div className="flex items-center gap-3">
-                          <div className={`w-3 h-3 rounded-full ${getCategoryColor(cat).split(' ')[1]}`} />
-                          <span className="font-medium text-slate-700">{cat}</span>
-                        </div>
-                        <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                          <button 
-                            onClick={() => setEditingCat({ old: cat, current: cat })}
-                            className="p-1.5 text-slate-400 hover:text-indigo-600 rounded-md transition-colors"
-                          >
-                            <PencilIcon />
-                          </button>
-                          <button 
-                            onClick={() => handleRemoveCat(cat)}
-                            className="p-1.5 text-slate-400 hover:text-red-600 rounded-md transition-colors"
-                          >
-                            <TrashIcon />
-                          </button>
+                        <span className="font-bold text-slate-700 text-lg">{cat}</span>
+                        <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-all">
+                          <button onClick={() => setEditingCat({ old: cat, current: cat })} className="p-2 text-slate-400 hover:text-indigo-600"><PencilIcon /></button>
+                          {cat !== 'Other' && <button onClick={() => handleRemoveCat(cat)} className="p-2 text-slate-400 hover:text-red-600"><TrashIcon /></button>}
                         </div>
                       </>
                     )}
@@ -539,126 +453,65 @@ const App: React.FC = () => {
         )}
 
         {view === AppView.FORM && (
-          <div className="max-w-4xl mx-auto space-y-6">
-            <button onClick={() => setView(AppView.LIST)} className="flex items-center gap-2 text-slate-500 hover:text-slate-800 transition-colors mb-4">
-              <ChevronLeftIcon /> Back to list
+          <div className="w-full mx-auto space-y-6">
+            <button onClick={() => setView(AppView.LIST)} className="flex items-center gap-2 text-slate-400 hover:text-slate-800 mb-4 font-bold">
+              <ChevronLeftIcon /> 返回
             </button>
             
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-              <div className="lg:col-span-2 space-y-6">
-                <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm space-y-4">
-                  <div>
-                    <label className="block text-sm font-medium text-slate-700 mb-1">Question Text</label>
-                    <textarea 
-                      value={formData.text}
-                      onChange={(e) => setFormData({...formData, text: e.target.value})}
-                      placeholder="Enter the interview question..."
-                      className="w-full px-4 py-2 border border-slate-200 rounded-xl min-h-[100px] focus:ring-2 focus:ring-indigo-500 outline-none"
-                    />
+            <div className="flex items-start gap-0 relative">
+              {/* Main Content Area */}
+              <div className="flex-1 min-w-0 pr-6">
+                <div className="bg-white p-8 rounded-[2rem] border border-slate-200 shadow-sm space-y-6">
+                  <textarea value={formData.text} onChange={(e) => setFormData({...formData, text: e.target.value})} placeholder="面试题目..." className="w-full px-6 py-5 bg-slate-50 border border-slate-100 rounded-3xl min-h-[120px] outline-none text-xl font-bold" />
+                  <div className="grid grid-cols-2 gap-6">
+                    <select value={formData.category} onChange={(e) => setFormData({...formData, category: e.target.value})} className="w-full px-5 py-3.5 bg-slate-50 border border-slate-100 rounded-2xl outline-none font-bold">
+                      {categories.map(c => <option key={c} value={c}>{c}</option>)}
+                    </select>
+                    <input type="text" value={formData.companyTag} onChange={(e) => setFormData({...formData, companyTag: e.target.value})} placeholder="公司标签..." className="w-full px-5 py-3.5 bg-slate-50 border border-slate-100 rounded-2xl outline-none font-bold" />
                   </div>
-                  
-                  <div className="grid grid-cols-2 gap-4">
-                    <div>
-                      <label className="block text-sm font-medium text-slate-700 mb-1">Category</label>
-                      <select 
-                        value={formData.category}
-                        onChange={(e) => setFormData({...formData, category: e.target.value})}
-                        className="w-full px-4 py-2 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none"
-                      >
-                        {categories.map(c => <option key={c} value={c}>{c}</option>)}
-                      </select>
-                    </div>
-                    <div>
-                      <label className="block text-sm font-medium text-slate-700 mb-1">Company (Optional)</label>
-                      <input 
-                        type="text"
-                        value={formData.companyTag}
-                        onChange={(e) => setFormData({...formData, companyTag: e.target.value})}
-                        placeholder="e.g. Google, TikTok"
-                        className="w-full px-4 py-2 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none"
-                      />
-                    </div>
-                  </div>
-
-                  <div>
+                  <div className="space-y-2 pt-4">
                     <div className="flex justify-between items-center mb-1">
-                      <label className="block text-sm font-medium text-slate-700">Answer</label>
-                      <button 
-                        onClick={handleGenerateAnswer}
-                        disabled={isGenerating}
-                        className="flex items-center gap-1.5 text-xs font-semibold text-indigo-600 hover:text-indigo-700 disabled:opacity-50"
-                      >
-                        {isGenerating ? 'Generating...' : <><SparklesIcon className="w-4 h-4" /> AI Generate</>}
+                      <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em]">答案详情</label>
+                      <button onClick={handleGenerateAnswer} disabled={isGenerating || !formData.text.trim()} className="flex items-center gap-2 text-xs font-black text-indigo-600">
+                        {isGenerating ? '正在生成...' : <><SparklesIcon className="w-4 h-4" /> AI 生成答案</>}
                       </button>
                     </div>
-                    <textarea 
-                      value={formData.answer}
-                      onChange={(e) => setFormData({...formData, answer: e.target.value})}
-                      placeholder="Write your answer or use AI to help..."
-                      className="w-full px-4 py-2 border border-slate-200 rounded-xl min-h-[300px] focus:ring-2 focus:ring-indigo-500 outline-none font-mono text-sm"
-                    />
+                    <textarea value={formData.answer} onChange={(e) => setFormData({...formData, answer: e.target.value})} placeholder="输入答案..." className="w-full px-6 py-6 bg-slate-50 border border-slate-100 rounded-3xl min-h-[400px] outline-none font-medium leading-relaxed" />
                   </div>
-
-                  <div className="flex justify-end gap-3 pt-4">
-                    <button onClick={() => setView(AppView.LIST)} className="px-6 py-2 border border-slate-200 rounded-xl hover:bg-slate-50 transition-colors">Cancel</button>
-                    <button onClick={handleSave} className="px-6 py-2 bg-indigo-600 text-white rounded-xl hover:bg-indigo-700 shadow-md transition-all">
-                      {isCategorizing ? 'Saving...' : 'Save Question'}
-                    </button>
+                  <div className="flex justify-end gap-3 pt-6">
+                    <button onClick={() => setView(AppView.LIST)} className="px-8 py-3.5 border border-slate-200 rounded-2xl font-bold">取消</button>
+                    <button onClick={handleSave} className="px-10 py-3.5 bg-indigo-600 text-white rounded-2xl font-black shadow-xl">保存题目</button>
                   </div>
                 </div>
               </div>
 
-              <div className="lg:col-span-1 bg-slate-50 rounded-2xl border border-slate-200 flex flex-col h-[600px]">
-                <div className="p-4 border-b border-slate-200 bg-white rounded-t-2xl flex items-center gap-2">
-                  <SparklesIcon className="w-5 h-5 text-indigo-600" />
-                  <h3 className="font-semibold text-slate-800">AI Assistant</h3>
-                </div>
-                <div className="flex-1 overflow-y-auto p-4 space-y-4">
-                  {chatHistory.length === 0 && (
-                    <div className="text-center py-10">
-                      <p className="text-xs text-slate-400 px-6">Ask for help refining your answer, generating examples, or explaining concepts.</p>
-                    </div>
-                  )}
+              {/* Resize handle */}
+              <div 
+                className="w-1.5 hover:bg-indigo-400 cursor-col-resize self-stretch transition-colors rounded-full z-10 mx-1"
+                onMouseDown={startResizing}
+              ></div>
+
+              {/* AI Assistant Sidebar Area */}
+              <div 
+                className="bg-white rounded-[2rem] border border-slate-200 shadow-sm flex flex-col h-[750px] overflow-hidden sticky top-8 shrink-0"
+                style={{ width: `${sidebarWidth}px` }}
+              >
+                <div className="p-6 border-b border-slate-100 flex items-center gap-2"><SparklesIcon className="w-5 h-5 text-indigo-600" /><h3 className="font-black">AI 助理</h3></div>
+                <div className="flex-1 overflow-y-auto p-6 space-y-5 bg-slate-50/30">
                   {chatHistory.map((msg, i) => (
                     <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                      <div className={`max-w-[85%] px-3 py-2 rounded-2xl text-sm ${
-                        msg.role === 'user' 
-                          ? 'bg-indigo-600 text-white rounded-tr-none' 
-                          : 'bg-white border border-slate-200 text-slate-700 rounded-tl-none shadow-sm'
-                      }`}>
-                        {msg.text}
-                      </div>
+                      <MathContent 
+                        content={msg.text} 
+                        className={`max-w-[95%] px-4 py-3 rounded-2xl text-sm ${msg.role === 'user' ? 'bg-indigo-600 text-white' : 'bg-white border border-slate-100 text-slate-700 font-medium'}`} 
+                      />
                     </div>
                   ))}
-                  {isChatLoading && (
-                    <div className="flex justify-start">
-                      <div className="bg-white border border-slate-200 px-3 py-2 rounded-2xl rounded-tl-none shadow-sm flex gap-1">
-                        <div className="w-1.5 h-1.5 bg-slate-300 rounded-full animate-bounce" />
-                        <div className="w-1.5 h-1.5 bg-slate-300 rounded-full animate-bounce delay-75" />
-                        <div className="w-1.5 h-1.5 bg-slate-300 rounded-full animate-bounce delay-150" />
-                      </div>
-                    </div>
-                  )}
+                  {isChatLoading && <div className="text-xs text-slate-400 animate-pulse">AI 正在思考...</div>}
                   <div ref={chatEndRef} />
                 </div>
-                <div className="p-4 bg-white border-t border-slate-200 rounded-b-2xl">
-                  <div className="flex gap-2">
-                    <input 
-                      type="text" 
-                      value={chatInput}
-                      onChange={(e) => setChatInput(e.target.value)}
-                      onKeyDown={(e) => e.key === 'Enter' && handleChatSend()}
-                      placeholder="How can I improve this?"
-                      className="flex-1 bg-slate-100 border-none rounded-xl px-4 py-2 text-sm focus:ring-2 focus:ring-indigo-500 outline-none"
-                    />
-                    <button 
-                      onClick={handleChatSend}
-                      disabled={isChatLoading || !chatInput.trim()}
-                      className="bg-indigo-600 text-white p-2 rounded-xl hover:bg-indigo-700 disabled:opacity-50 transition-all flex items-center justify-center"
-                    >
-                      <PlusIcon />
-                    </button>
-                  </div>
+                <div className="p-6 bg-white border-t border-slate-100 flex gap-2">
+                  <input type="text" value={chatInput} onChange={(e) => setChatInput(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleChatSend()} placeholder="向 AI 提问..." className="flex-1 bg-slate-50 rounded-2xl px-5 py-3.5 text-sm outline-none font-bold" />
+                  <button onClick={handleChatSend} className="bg-indigo-600 text-white p-3 rounded-2xl shadow-lg active:scale-90"><PlusIcon /></button>
                 </div>
               </div>
             </div>
@@ -666,54 +519,26 @@ const App: React.FC = () => {
         )}
 
         {view === AppView.DETAIL && currentQuestion && (
-          <div className="max-w-3xl mx-auto">
-            <button onClick={() => setView(AppView.LIST)} className="flex items-center gap-2 text-slate-500 hover:text-slate-800 transition-colors mb-6">
-              <ChevronLeftIcon /> Back to list
-            </button>
-            
-            <article className="bg-white p-8 rounded-3xl border border-slate-200 shadow-sm space-y-6">
-              <div className="flex justify-between items-start">
-                <span className={`text-xs font-bold px-3 py-1 rounded-full uppercase tracking-widest border ${getCategoryColor(currentQuestion.category)}`}>
-                  {currentQuestion.category}
-                </span>
+          <div className="max-w-4xl mx-auto">
+            <button onClick={() => setView(AppView.LIST)} className="flex items-center gap-2 text-slate-400 hover:text-slate-800 mb-6 font-bold"><ChevronLeftIcon /> 返回列表</button>
+            <article className="bg-white p-12 rounded-[3rem] border border-slate-200 shadow-sm space-y-8">
+              <div className="flex justify-between">
+                <span className={`text-[10px] font-black px-4 py-1.5 rounded-full uppercase border ${getCategoryColor(currentQuestion.category)}`}>{currentQuestion.category}</span>
                 <div className="flex gap-2">
-                  <button onClick={() => handleEdit(currentQuestion)} className="p-2 text-slate-400 hover:text-indigo-600 transition-colors">
-                    <PencilIcon />
-                  </button>
-                  <button onClick={() => handleDelete(currentQuestion.id)} className="p-2 text-slate-400 hover:text-red-600 transition-colors">
-                    <TrashIcon />
-                  </button>
+                  <button onClick={() => handleEdit(currentQuestion)} className="p-2.5 text-slate-300 hover:text-indigo-600"><PencilIcon /></button>
+                  <button onClick={() => handleDelete(currentQuestion.id)} className="p-2.5 text-slate-300 hover:text-red-600"><TrashIcon /></button>
                 </div>
               </div>
-
-              <h2 className="text-3xl font-bold text-slate-900 leading-tight">
-                {currentQuestion.text}
-              </h2>
-
-              <div className="flex items-center gap-4 text-sm text-slate-500 pb-6 border-b border-slate-100">
-                {currentQuestion.companyTag && (
-                  <span className="flex items-center gap-1.5 bg-slate-100 px-3 py-1 rounded-full">
-                    <BuildingIcon /> {currentQuestion.companyTag}
-                  </span>
-                )}
-                <span>Updated on {formatDate(currentQuestion.updatedAt)}</span>
-                {currentQuestion.isAiGenerated && (
-                  <span className="flex items-center gap-1 text-indigo-600 font-medium italic">
-                    <SparklesIcon className="w-4 h-4" /> AI Generated
-                  </span>
-                )}
+              <h2 className="text-4xl font-black text-slate-900 leading-tight">{currentQuestion.text}</h2>
+              <div className="flex flex-wrap items-center gap-4 text-xs font-bold text-slate-400 pb-8 border-b border-slate-100">
+                {currentQuestion.companyTag && <span className="bg-slate-50 px-4 py-2 rounded-xl">{currentQuestion.companyTag}</span>}
+                <span>更新于 {formatDate(currentQuestion.updatedAt)}</span>
+                {currentQuestion.isAiGenerated && <span className="text-indigo-600 bg-indigo-50 px-3 py-1.5 rounded-xl border border-indigo-100">AI 联网生成</span>}
               </div>
-
-              <div className="prose prose-slate max-w-none">
-                <h4 className="text-sm font-semibold text-slate-400 uppercase tracking-widest mb-4">Sample Answer</h4>
-                <div className="whitespace-pre-wrap text-slate-700 leading-relaxed bg-slate-50 p-6 rounded-2xl border border-slate-100 font-sans">
-                  {currentQuestion.answer || "No answer provided yet."}
-                </div>
+              <div className="prose prose-slate max-w-none pt-4">
+                <MathContent content={currentQuestion.answer || "暂无回答记录。"} className="whitespace-pre-wrap text-slate-700 leading-relaxed bg-slate-50/50 p-10 rounded-[2.5rem] border border-slate-100 text-lg font-medium" />
               </div>
-
-              {currentQuestion.sources && currentQuestion.sources.length > 0 && (
-                <SourceList sources={currentQuestion.sources} />
-              )}
+              {currentQuestion.sources && currentQuestion.sources.length > 0 && <SourceList sources={currentQuestion.sources} />}
             </article>
           </div>
         )}
