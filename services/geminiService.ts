@@ -1,8 +1,7 @@
+
 import { GoogleGenAI, Chat } from "@google/genai";
 import { GroundingChunk } from "../types";
 import { getCategories } from "./storageService";
-
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 
 export interface GenerateResult {
   answer: string;
@@ -19,6 +18,7 @@ const getCategoryPromptPart = () => {
  * Generates an interview answer using Gemini with Google Search grounding.
  */
 export const generateInterviewAnswer = async (question: string): Promise<GenerateResult> => {
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
   try {
     const categories = getCategories();
     const response = await ai.models.generateContent({
@@ -71,6 +71,7 @@ export const generateInterviewAnswer = async (question: string): Promise<Generat
  * Initializes a new chat session for refining interview answers.
  */
 export const createAiChatSession = (question: string, currentAnswer: string): Chat => {
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
   return ai.chats.create({
     model: 'gemini-3-flash-preview',
     config: {
@@ -88,6 +89,7 @@ export const createAiChatSession = (question: string, currentAnswer: string): Ch
  * Categorizes a question based on its content using the Gemini model.
  */
 export const autoCategorize = async (question: string): Promise<string> => {
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
   try {
     const categories = getCategories();
     const response = await ai.models.generateContent({

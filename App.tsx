@@ -291,10 +291,7 @@ const App: React.FC = () => {
   const filteredQuestions = useMemo(() => {
     const now = Date.now();
     return questions.filter(q => {
-      // Category check
       const matchCategory = selectedCategory === 'All' || q.category === selectedCategory;
-      
-      // Date check
       let matchDate = true;
       if (dateFilter !== 'all') {
         const diff = now - q.updatedAt;
@@ -304,11 +301,8 @@ const App: React.FC = () => {
         else if (dateFilter === 'month') matchDate = diff < oneDay * 30;
         else if (dateFilter === 'year') matchDate = diff < oneDay * 365;
       }
-
-      // Search check
       const matchSearch = q.text.toLowerCase().includes(searchQuery.toLowerCase()) || 
                           (q.companyTag && q.companyTag.toLowerCase().includes(searchQuery.toLowerCase()));
-      
       return matchCategory && matchDate && matchSearch;
     });
   }, [questions, selectedCategory, dateFilter, searchQuery]);
@@ -345,36 +339,56 @@ const App: React.FC = () => {
                 </div>
               </div>
 
-              {/* Date Filter */}
+              {/* Date Filter Section */}
               <div className="bg-white p-8 rounded-[2rem] border border-slate-200 shadow-sm">
-                <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-6">时间范围</h3>
+                <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-6">时间范围筛选</h3>
                 <div className="space-y-2">
-                  <button onClick={() => setDateFilter('all')} className={`w-full text-left px-5 py-4 rounded-2xl text-sm transition-all font-bold flex items-center gap-3 ${dateFilter === 'all' ? 'bg-indigo-600 text-white shadow-xl shadow-indigo-100' : 'text-slate-500 hover:bg-slate-50'}`}>
+                  <button 
+                    onClick={() => setDateFilter('all')} 
+                    className={`w-full text-left px-5 py-4 rounded-2xl text-sm transition-all font-bold flex items-center gap-3 ${dateFilter === 'all' ? 'bg-indigo-600 text-white shadow-xl shadow-indigo-100' : 'text-slate-500 hover:bg-slate-50'}`}
+                  >
                     全部时间
                   </button>
-                  <button onClick={() => setDateFilter('today')} className={`w-full text-left px-5 py-4 rounded-2xl text-sm transition-all font-bold flex items-center gap-3 ${dateFilter === 'today' ? 'bg-indigo-600 text-white shadow-xl shadow-indigo-100' : 'text-slate-500 hover:bg-slate-50'}`}>
+                  <button 
+                    onClick={() => setDateFilter('today')} 
+                    className={`w-full text-left px-5 py-4 rounded-2xl text-sm transition-all font-bold flex items-center gap-3 ${dateFilter === 'today' ? 'bg-indigo-600 text-white shadow-xl shadow-indigo-100' : 'text-slate-500 hover:bg-slate-50'}`}
+                  >
                     <CalendarIcon className="w-4 h-4" /> 今天
                   </button>
-                  <button onClick={() => setDateFilter('week')} className={`w-full text-left px-5 py-4 rounded-2xl text-sm transition-all font-bold flex items-center gap-3 ${dateFilter === 'week' ? 'bg-indigo-600 text-white shadow-xl shadow-indigo-100' : 'text-slate-500 hover:bg-slate-50'}`}>
+                  <button 
+                    onClick={() => setDateFilter('week')} 
+                    className={`w-full text-left px-5 py-4 rounded-2xl text-sm transition-all font-bold flex items-center gap-3 ${dateFilter === 'week' ? 'bg-indigo-600 text-white shadow-xl shadow-indigo-100' : 'text-slate-500 hover:bg-slate-50'}`}
+                  >
                     <CalendarIcon className="w-4 h-4" /> 最近7天
                   </button>
-                  <button onClick={() => setDateFilter('month')} className={`w-full text-left px-5 py-4 rounded-2xl text-sm transition-all font-bold flex items-center gap-3 ${dateFilter === 'month' ? 'bg-indigo-600 text-white shadow-xl shadow-indigo-100' : 'text-slate-500 hover:bg-slate-50'}`}>
+                  <button 
+                    onClick={() => setDateFilter('month')} 
+                    className={`w-full text-left px-5 py-4 rounded-2xl text-sm transition-all font-bold flex items-center gap-3 ${dateFilter === 'month' ? 'bg-indigo-600 text-white shadow-xl shadow-indigo-100' : 'text-slate-500 hover:bg-slate-50'}`}
+                  >
                     <CalendarIcon className="w-4 h-4" /> 最近30天
                   </button>
                 </div>
               </div>
 
-              {/* Data Management */}
+              {/* Data Management Section */}
               <div className="bg-white p-8 rounded-[2rem] border border-slate-200 shadow-sm">
-                <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-6">数据管理</h3>
+                <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-6">数据导入/导出</h3>
                 <div className="grid grid-cols-2 gap-3">
-                  <button onClick={exportQuestions} className="flex flex-col items-center gap-2 p-4 bg-slate-50 hover:bg-indigo-50 text-slate-500 hover:text-indigo-600 rounded-2xl transition-all border border-slate-100 hover:border-indigo-100">
+                  <button 
+                    onClick={exportQuestions} 
+                    title="将数据导出为 JSON"
+                    className="flex flex-col items-center justify-center gap-2 p-4 bg-slate-50 hover:bg-indigo-50 text-slate-500 hover:text-indigo-600 rounded-2xl transition-all border border-slate-100 hover:border-indigo-100"
+                  >
                     <DownloadIcon className="w-6 h-6" />
-                    <span className="text-[10px] font-black uppercase">导出</span>
+                    <span className="text-[10px] font-black uppercase">导出数据</span>
                   </button>
-                  <button onClick={() => fileInputRef.current?.click()} className="flex flex-col items-center gap-2 p-4 bg-slate-50 hover:bg-indigo-50 text-slate-500 hover:text-indigo-600 rounded-2xl transition-all border border-slate-100 hover:border-indigo-100">
+                  <button 
+                    onClick={() => fileInputRef.current?.click()} 
+                    title="从 JSON 文件导入数据"
+                    className="flex flex-col items-center justify-center gap-2 p-4 bg-slate-50 hover:bg-indigo-50 text-slate-500 hover:text-indigo-600 rounded-2xl transition-all border border-slate-100 hover:border-indigo-100"
+                  >
                     <UploadIcon className="w-6 h-6" />
-                    <span className="text-[10px] font-black uppercase">导入</span>
+                    <span className="text-[10px] font-black uppercase">导入数据</span>
                   </button>
                   <input type="file" ref={fileInputRef} onChange={handleImport} accept=".json" className="hidden" />
                 </div>
@@ -384,13 +398,13 @@ const App: React.FC = () => {
             <div className="md:col-span-3 space-y-8">
               <div className="relative">
                 <SearchIcon className="absolute left-7 top-1/2 -translate-y-1/2 w-7 h-7 text-slate-300" />
-                <input type="text" placeholder="搜索题目内容..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} className="w-full pl-16 pr-8 py-6 bg-white border-none rounded-[2.5rem] shadow-xl outline-none text-2xl font-bold focus:ring-8 focus:ring-indigo-50 transition-all" />
+                <input type="text" placeholder="搜索题目内容、公司标签..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} className="w-full pl-16 pr-8 py-6 bg-white border-none rounded-[2.5rem] shadow-xl outline-none text-2xl font-bold focus:ring-8 focus:ring-indigo-50 transition-all" />
               </div>
 
               <div className="grid grid-cols-1 gap-6">
                 {filteredQuestions.length === 0 ? (
                   <div className="text-center py-20 bg-white rounded-[2.5rem] border border-dashed border-slate-200">
-                    <p className="text-slate-400 font-bold uppercase tracking-widest text-sm">没有找到匹配的面试题</p>
+                    <p className="text-slate-400 font-bold uppercase tracking-widest text-sm">没有找到符合条件的题目</p>
                   </div>
                 ) : (
                   filteredQuestions.map(q => (
@@ -423,12 +437,12 @@ const App: React.FC = () => {
             <div className="flex items-stretch gap-0 h-[800px] relative">
               <div className="flex-1 min-w-0 pr-10 overflow-y-auto no-scrollbar">
                 <div className="bg-white p-14 rounded-[4rem] border border-slate-200 shadow-xl space-y-12">
-                  <textarea value={formData.text} onChange={(e) => setFormData({...formData, text: e.target.value})} placeholder="输入题目核心..." className="w-full px-10 py-8 bg-slate-50 border-none rounded-[3rem] min-h-[160px] outline-none text-4xl font-black focus:bg-white focus:ring-[12px] focus:ring-indigo-50 transition-all" />
+                  <textarea value={formData.text} onChange={(e) => setFormData({...formData, text: e.target.value})} placeholder="输入题目核心内容..." className="w-full px-10 py-8 bg-slate-50 border-none rounded-[3rem] min-h-[160px] outline-none text-4xl font-black focus:bg-white focus:ring-[12px] focus:ring-indigo-50 transition-all" />
                   <div className="grid grid-cols-2 gap-12">
                     <select value={formData.category} onChange={(e) => setFormData({...formData, category: e.target.value})} className="w-full px-10 py-6 bg-slate-50 rounded-[2rem] outline-none font-black appearance-none focus:ring-4 focus:ring-indigo-50 transition-all">
                       {categories.map(c => <option key={c} value={c}>{c}</option>)}
                     </select>
-                    <input type="text" value={formData.companyTag} onChange={(e) => setFormData({...formData, companyTag: e.target.value})} placeholder="公司标签..." className="w-full px-10 py-6 bg-slate-50 rounded-[2rem] outline-none font-black focus:bg-white transition-all" />
+                    <input type="text" value={formData.companyTag} onChange={(e) => setFormData({...formData, companyTag: e.target.value})} placeholder="公司标签 (如: Google, Meta)..." className="w-full px-10 py-6 bg-slate-50 rounded-[2rem] outline-none font-black focus:bg-white transition-all" />
                   </div>
                   <div className="space-y-5">
                     <div className="flex justify-between items-center mb-2 px-4">
