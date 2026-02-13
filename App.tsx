@@ -7,27 +7,11 @@ import {
   deleteQuestion, 
   loadInitialDataFromProject,
   getCategories,
-  saveCategories,
-  renameCategory,
-  removeCategory,
   importQuestions,
   exportQuestions
 } from './services/storageService';
 import { generateInterviewAnswer, autoCategorize, createAiChatSession } from './services/geminiService';
-import { 
-  PlusIcon, 
-  ChevronLeftIcon, 
-  SparklesIcon, 
-  TrashIcon, 
-  PencilIcon, 
-  SearchIcon, 
-  CalendarIcon, 
-  BuildingIcon, 
-  DownloadIcon, 
-  UploadIcon,
-  Cog6ToothIcon,
-  CheckIcon
-} from './components/Icons';
+import { PlusIcon, ChevronLeftIcon, SparklesIcon, TrashIcon, PencilIcon, SearchIcon, CalendarIcon, BuildingIcon, DownloadIcon, UploadIcon } from './components/Icons';
 import { SourceList } from './components/SourceList';
 import { Chat, GenerateContentResponse } from "@google/genai";
 
@@ -36,167 +20,39 @@ const formatDate = (timestamp: number) => {
 };
 
 /**
- * Enhanced handwriting component with responsive scaling
- */
-const HandwritingCanvas: React.FC<{ value?: string; onChange: (data: string) => void; readOnly?: boolean }> = ({ value, onChange, readOnly }) => {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const containerRef = useRef<HTMLDivElement>(null);
-  const [isDrawing, setIsDrawing] = useState(false);
-  const ctxRef = useRef<CanvasRenderingContext2D | null>(null);
-
-  const initCanvas = () => {
-    const canvas = canvasRef.current;
-    const container = containerRef.current;
-    if (!canvas || !container) return;
-    
-    const rect = container.getBoundingClientRect();
-    canvas.width = rect.width * 2;
-    canvas.height = 500 * 2;
-    
-    const ctx = canvas.getContext('2d');
-    if (ctx) {
-      ctx.scale(2, 2);
-      ctx.lineCap = 'round';
-      ctx.lineJoin = 'round';
-      ctx.strokeStyle = '#334155';
-      ctx.lineWidth = 2.5;
-      ctxRef.current = ctx;
-      
-      if (value) {
-        const img = new Image();
-        img.onload = () => ctx.drawImage(img, 0, 0, rect.width, 500);
-        img.src = value;
-      }
-    }
-  };
-
-  useEffect(() => {
-    initCanvas();
-    window.addEventListener('resize', initCanvas);
-    return () => window.removeEventListener('resize', initCanvas);
-  }, []);
-
-  const getCoordinates = (e: React.MouseEvent | React.TouchEvent) => {
-    const canvas = canvasRef.current;
-    if (!canvas) return { x: 0, y: 0 };
-    const rect = canvas.getBoundingClientRect();
-    let clientX, clientY;
-    
-    if ('touches' in e) {
-      clientX = e.touches[0].clientX;
-      clientY = e.touches[0].clientY;
-    } else {
-      clientX = (e as React.MouseEvent).clientX;
-      clientY = (e as React.MouseEvent).clientY;
-    }
-    
-    return {
-      x: clientX - rect.left,
-      y: clientY - rect.top
-    };
-  };
-
-  const startDrawing = (e: React.MouseEvent | React.TouchEvent) => {
-    if (readOnly) return;
-    setIsDrawing(true);
-    const { x, y } = getCoordinates(e);
-    ctxRef.current?.beginPath();
-    ctxRef.current?.moveTo(x, y);
-  };
-
-  const draw = (e: React.MouseEvent | React.TouchEvent) => {
-    if (!isDrawing || readOnly) return;
-    const { x, y } = getCoordinates(e);
-    ctxRef.current?.lineTo(x, y);
-    ctxRef.current?.stroke();
-  };
-
-  const stopDrawing = () => {
-    if (readOnly) return;
-    setIsDrawing(false);
-    const canvas = canvasRef.current;
-    if (canvas) onChange(canvas.toDataURL());
-  };
-
-  return (
-    <div ref={containerRef} className="relative w-full overflow-hidden bg-slate-50 rounded-[2.5rem] border-2 border-slate-100 shadow-inner">
-      <canvas
-        ref={canvasRef}
-        onMouseDown={startDrawing}
-        onMouseMove={draw}
-        onMouseUp={stopDrawing}
-        onMouseLeave={stopDrawing}
-        onTouchStart={(e) => { e.preventDefault(); startDrawing(e); }}
-        onTouchMove={(e) => { e.preventDefault(); draw(e); }}
-        onTouchEnd={stopDrawing}
-        className={`w-full h-[500px] cursor-crosshair ${readOnly ? 'pointer-events-none' : ''}`}
-        style={{ touchAction: 'none' }}
-      />
-      {!readOnly && (
-        <div className="absolute top-6 right-6 flex gap-3">
-          <button 
-            onClick={() => {
-              const ctx = ctxRef.current;
-              if (ctx && canvasRef.current) {
-                ctx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
-                onChange('');
-              }
-            }} 
-            className="px-5 py-2 bg-white/90 backdrop-blur rounded-xl text-rose-500 shadow-lg hover:bg-rose-50 font-black text-[10px] uppercase transition-all"
-          >
-            清空画布
-          </button>
-        </div>
-      )}
-    </div>
-  );
-};
-
-/**
- * CSP-Safe Math Rendering Component
+ * 核心：专业公式渲染组件
  */
 const MathContent: React.FC<{ content: string; className?: string }> = ({ content, className }) => {
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (!content || !containerRef.current) return;
-    
-    const text = content
-      .replace(/\\\[/g, '$$$$')
-      .replace(/\\\]/g, '$$$$')
-      .replace(/\\\(/g, '$')
-      .replace(/\\\)/g, '$');
-    
-    const parts = text.split(/(\$\$.*?\$\$|\$.*?\$)/gs);
-    containerRef.current.innerHTML = '';
-    
-    parts.forEach(part => {
-      if (!part) return;
-      if (part.startsWith('$$') && part.endsWith('$$')) {
-        const math = part.slice(2, -2);
-        const div = document.createElement('div');
-        div.className = 'my-6 flex justify-center overflow-x-auto py-2';
+    if (!content) return;
+    const render = () => {
+      if (containerRef.current && (window as any).renderMathInElement) {
         try {
-          (window as any).katex.render(math, div, { displayMode: true, throwOnError: false });
-        } catch (e) { div.innerText = part; }
-        containerRef.current?.appendChild(div);
-      } else if (part.startsWith('$') && part.endsWith('$')) {
-        const math = part.slice(1, -1);
-        const span = document.createElement('span');
-        span.className = 'inline-block px-1';
-        try {
-          (window as any).katex.render(math, span, { displayMode: false, throwOnError: false });
-        } catch (e) { span.innerText = part; }
-        containerRef.current?.appendChild(span);
-      } else {
-        const span = document.createElement('span');
-        span.innerText = part;
-        containerRef.current?.appendChild(span);
-      }
-    });
+          (window as any).renderMathInElement(containerRef.current, {
+            delimiters: [
+              { left: '$$', right: '$$', display: true },
+              { left: '$', right: '$', display: false },
+              { left: '\\(', right: '\\)', display: false },
+              { left: '\\[', right: '\\]', display: true }
+            ],
+            throwOnError: false,
+            trust: true,
+          });
+        } catch (err) { console.warn("KaTeX Error:", err); }
+      } else { setTimeout(render, 300); }
+    };
+    render();
   }, [content]);
 
-  return <div ref={containerRef} className={`${className} whitespace-pre-wrap break-words leading-relaxed text-slate-700 font-medium`} />;
+  return (
+    <div ref={containerRef} className={`${className} math-container prose prose-slate max-w-none`}>
+      <div className="whitespace-pre-wrap break-words leading-relaxed text-slate-700">
+        {content.replace(/\\\[/g, '$$$$').replace(/\\\]/g, '$$$$').replace(/\\\(/g, '$').replace(/\\\)/g, '$')}
+      </div>
+    </div>
+  );
 };
 
 interface ChatMessage {
@@ -222,28 +78,19 @@ const App: React.FC = () => {
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
-  
-  const [editMode, setEditMode] = useState<'text' | 'drawing'>('text');
   const [formData, setFormData] = useState<QuestionDraft>({
     text: '',
     answer: '',
-    drawing: '',
     category: 'Other',
     companyTag: '',
     isAiGenerated: false,
     sources: [],
   });
-  
   const [isGenerating, setIsGenerating] = useState(false);
-  const [genStatus, setGenStatus] = useState<string[]>([]);
   const [chatHistory, setChatHistory] = useState<ChatMessage[]>([]);
   const [chatInput, setChatInput] = useState('');
   const [isChatLoading, setIsChatLoading] = useState(false);
   const chatSessionRef = useRef<Chat | null>(null);
-
-  const [newCategoryName, setNewCategoryName] = useState('');
-  const [editingCategoryIndex, setEditingCategoryIndex] = useState<number | null>(null);
-  const [editingCategoryValue, setEditingCategoryValue] = useState('');
 
   useEffect(() => {
     const init = async () => {
@@ -285,10 +132,9 @@ const App: React.FC = () => {
   };
 
   const handleCreateNew = () => {
-    setFormData({ text: '', answer: '', drawing: '', category: 'Other', companyTag: '', isAiGenerated: false, sources: [] });
+    setFormData({ text: '', answer: '', category: 'Other', companyTag: '', isAiGenerated: false, sources: [] });
     setCurrentQuestion(null);
     setChatHistory([]);
-    setEditMode('text');
     chatSessionRef.current = null;
     setView(AppView.FORM);
   };
@@ -298,16 +144,28 @@ const App: React.FC = () => {
     setFormData({
       text: q.text,
       answer: q.answer,
-      drawing: q.drawing || '',
       category: q.category || 'Other',
       companyTag: q.companyTag || '',
       isAiGenerated: q.isAiGenerated,
       sources: q.sources || [],
     });
     setChatHistory([]);
-    setEditMode(q.drawing ? 'drawing' : 'text');
     chatSessionRef.current = null;
     setView(AppView.FORM);
+  };
+
+  const handleViewDetail = (q: Question) => {
+    setCurrentQuestion(q);
+    setView(AppView.DETAIL);
+  };
+
+  const handleDelete = async (id: string, e?: React.MouseEvent) => {
+    e?.stopPropagation();
+    if (confirm('确定要删除这道题吗？')) {
+      await deleteQuestion(id);
+      refreshAll();
+      if (view === AppView.DETAIL) setView(AppView.LIST);
+    }
   };
 
   const handleSave = async () => {
@@ -323,7 +181,6 @@ const App: React.FC = () => {
       updatedAt: now,
       text: formData.text,
       answer: formData.answer,
-      drawing: formData.drawing,
       category: finalCategory,
       companyTag: formData.companyTag,
       isAiGenerated: formData.isAiGenerated,
@@ -334,18 +191,48 @@ const App: React.FC = () => {
     setView(AppView.LIST);
   };
 
+  const handleChatSend = async () => {
+    if (!chatInput.trim() || isChatLoading) return;
+    if (!process.env.API_KEY) {
+      alert("未检测到 API Key，请检查 .env.local 文件配置。");
+      return;
+    }
+    
+    const msg = chatInput;
+    setChatInput('');
+    setChatHistory(prev => [...prev, { role: 'user', text: msg }]);
+    setIsChatLoading(true);
+
+    try {
+      if (!chatSessionRef.current) {
+        chatSessionRef.current = createAiChatSession(formData.text, formData.answer);
+      }
+      const result: GenerateContentResponse = await chatSessionRef.current.sendMessage({ message: msg });
+      const chunks = result.candidates?.[0]?.groundingMetadata?.groundingChunks || [];
+      const sources = chunks
+        .filter((chunk: any) => chunk.web?.uri && chunk.web?.title)
+        .map((chunk: any) => ({
+          web: { uri: chunk.web.uri, title: chunk.web.title }
+        })) as GroundingChunk[];
+
+      setChatHistory(prev => [...prev, { 
+        role: 'model', 
+        text: result.text || "AI 暂时无法回答。",
+        sources: sources.length > 0 ? sources : undefined
+      }]);
+    } catch (e) {
+      console.error(e);
+      setChatHistory(prev => [...prev, { role: 'model', text: "抱歉，对话解析时出现了错误，请检查网络或 API Key。" }]);
+    } finally {
+      setIsChatLoading(false);
+    }
+  };
+
   const handleGenerateAnswer = async () => {
     if (!formData.text.trim()) return;
     setIsGenerating(true);
-    setGenStatus(['📡 启动联网搜索引擎...']);
-    
     try {
-      setTimeout(() => setGenStatus(prev => [...prev, '🔍 检索行业最佳实践及深度资料...']), 800);
-      setTimeout(() => setGenStatus(prev => [...prev, '🧠 分析题目结构及推演逻辑...']), 1600);
-      setTimeout(() => setGenStatus(prev => [...prev, '✍️ 整理 LaTeX 公式及专业解答...']), 2400);
-
       const result = await generateInterviewAnswer(formData.text);
-      
       setFormData(prev => ({
         ...prev,
         answer: result.answer,
@@ -353,68 +240,10 @@ const App: React.FC = () => {
         isAiGenerated: true,
         sources: result.sources
       }));
-      setEditMode('text');
     } catch (error) {
-      alert('生成答案失败，请检查 API 配置');
+      alert('生成答案失败，请检查配置');
     } finally {
-      setTimeout(() => {
-        setIsGenerating(false);
-        setGenStatus([]);
-      }, 500);
-    }
-  };
-
-  // Fix: Added handleViewDetail to resolve missing reference in List view
-  const handleViewDetail = (q: Question) => {
-    setCurrentQuestion(q);
-    setView(AppView.DETAIL);
-  };
-
-  // Fix: Added handleChatSend to resolve missing reference in AI Chat Assistant
-  const handleChatSend = async () => {
-    if (!chatInput.trim()) return;
-
-    const userMessage: ChatMessage = { role: 'user', text: chatInput };
-    setChatHistory(prev => [...prev, userMessage]);
-    
-    const textToSubmit = chatInput;
-    setChatInput('');
-    setIsChatLoading(true);
-
-    try {
-      if (!chatSessionRef.current) {
-        // Initialize conversational session with technical reasoning model
-        chatSessionRef.current = createAiChatSession(formData.text, formData.answer);
-      }
-
-      // Use sendMessage to interact with the persistent chat session
-      const response = await chatSessionRef.current.sendMessage({ message: textToSubmit });
-      const responseText = response.text || "";
-      
-      // Extract grounding metadata to display sources as required by Gemini guidelines
-      const chunks = response.candidates?.[0]?.groundingMetadata?.groundingChunks || [];
-      const sources = chunks
-        .filter((chunk: any) => chunk.web?.uri && chunk.web?.title)
-        .map((chunk: any) => ({
-          web: {
-            uri: chunk.web.uri,
-            title: chunk.web.title
-          }
-        })) as GroundingChunk[];
-
-      setChatHistory(prev => [...prev, { 
-        role: 'model', 
-        text: responseText, 
-        sources: sources.length > 0 ? sources : undefined 
-      }]);
-    } catch (error) {
-      console.error("AI Assistant Error:", error);
-      setChatHistory(prev => [...prev, { 
-        role: 'model', 
-        text: "抱歉，AI 助手请求超时或发生错误。请检查您的 API Key 状态。" 
-      }]);
-    } finally {
-      setIsChatLoading(false);
+      setIsGenerating(false);
     }
   };
 
@@ -440,254 +269,191 @@ const App: React.FC = () => {
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 font-sans pb-10">
       <div className="max-w-[1600px] mx-auto px-6 py-8">
-        <header className="mb-12 flex flex-col md:flex-row md:items-center justify-between gap-6">
-          <div className="flex items-center gap-6">
-             <div className="p-5 bg-indigo-600 rounded-[1.5rem] shadow-2xl shadow-indigo-200">
-               <SparklesIcon className="w-8 h-8 text-white" />
+        <header className="mb-10 flex flex-col md:flex-row md:items-center justify-between gap-6">
+          <div className="flex items-center gap-5">
+             <div className="p-4 bg-indigo-600 rounded-[1.2rem] shadow-2xl shadow-indigo-200">
+               <SparklesIcon className="w-7 h-7 text-white" />
              </div>
              <div>
                <h1 className="text-4xl font-black bg-gradient-to-br from-slate-900 to-indigo-600 bg-clip-text text-transparent tracking-tight">Interview Master</h1>
-               <p className="text-slate-400 font-bold uppercase tracking-widest text-[11px] mt-1 flex items-center gap-2">
-                 <span className="w-2 h-2 rounded-full bg-indigo-500 animate-pulse" />
-                 AI 联网增强面试库
-               </p>
+               <p className="text-slate-400 font-bold uppercase tracking-widest text-[10px] mt-1">AI 联网增强面试系统</p>
              </div>
           </div>
-          <button onClick={handleCreateNew} className="flex items-center gap-3 bg-indigo-600 hover:bg-indigo-700 text-white px-10 py-5 rounded-[1.5rem] transition-all shadow-xl font-black text-sm active:scale-95">
+          <button onClick={handleCreateNew} className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white px-8 py-4 rounded-2xl transition-all shadow-xl font-black text-sm active:scale-95">
             <PlusIcon /> 新增面试题
           </button>
         </header>
 
         {view === AppView.LIST && (
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-12">
-            <aside className="md:col-span-1 space-y-10">
-              <div className="bg-white p-10 rounded-[2.5rem] border border-slate-200 shadow-sm">
-                <div className="flex items-center justify-between mb-8">
-                  <h3 className="text-[11px] font-black text-slate-400 uppercase tracking-widest">题库分类</h3>
-                  <button onClick={() => setView(AppView.MANAGE_CATEGORIES)} className="text-slate-300 hover:text-indigo-600 transition-colors p-2">
-                    <Cog6ToothIcon className="w-5 h-5" />
-                  </button>
-                </div>
-                <div className="space-y-3">
-                  <button onClick={() => setSelectedCategory('All')} className={`w-full text-left px-6 py-5 rounded-2xl text-sm transition-all font-black ${selectedCategory === 'All' ? 'bg-indigo-600 text-white shadow-xl shadow-indigo-100' : 'text-slate-500 hover:bg-slate-50'}`}>全部题库</button>
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-10">
+            <div className="md:col-span-1 space-y-8">
+              {/* 题库分类 */}
+              <div className="bg-white p-8 rounded-[2rem] border border-slate-200 shadow-sm">
+                <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-6">题库分类</h3>
+                <div className="space-y-2">
+                  <button onClick={() => setSelectedCategory('All')} className={`w-full text-left px-5 py-4 rounded-2xl text-sm transition-all font-bold ${selectedCategory === 'All' ? 'bg-indigo-600 text-white shadow-xl shadow-indigo-100' : 'text-slate-500 hover:bg-slate-50'}`}>全部</button>
                   {categories.map(cat => (
-                    <button key={cat} onClick={() => setSelectedCategory(cat)} className={`w-full text-left px-6 py-5 rounded-2xl text-sm transition-all font-black ${selectedCategory === cat ? 'bg-indigo-600 text-white shadow-xl shadow-indigo-100' : 'text-slate-500 hover:bg-slate-50'}`}>{cat}</button>
+                    <button key={cat} onClick={() => setSelectedCategory(cat)} className={`w-full text-left px-5 py-4 rounded-2xl text-sm transition-all font-bold ${selectedCategory === cat ? 'bg-indigo-600 text-white shadow-xl shadow-indigo-100' : 'text-slate-500 hover:bg-slate-50'}`}>{cat}</button>
                   ))}
                 </div>
               </div>
 
-              <div className="bg-white p-10 rounded-[2.5rem] border border-slate-200 shadow-sm">
-                <div className="flex items-center gap-2 mb-8">
-                  <CalendarIcon className="w-5 h-5 text-slate-400" />
-                  <h3 className="text-[11px] font-black text-slate-400 uppercase tracking-widest">记录时间</h3>
+              {/* 时间范围筛选 */}
+              <div className="bg-white p-8 rounded-[2rem] border border-slate-200 shadow-sm">
+                <div className="flex items-center gap-2 mb-6">
+                  <CalendarIcon className="w-4 h-4 text-slate-400" />
+                  <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-widest">时间范围</h3>
                 </div>
-                <div className="space-y-3">
-                  {['all', 'today', 'week', 'month'].map(item => (
+                <div className="space-y-2">
+                  {[
+                    { id: 'all', label: '全部时间' },
+                    { id: 'today', label: '今日新增' },
+                    { id: 'week', label: '本周' },
+                    { id: 'month', label: '本月' },
+                    { id: 'year', label: '本年' }
+                  ].map(item => (
                     <button 
-                      key={item} 
-                      onClick={() => setDateFilter(item as DateFilter)} 
-                      className={`w-full text-left px-6 py-4 rounded-2xl text-sm transition-all font-black ${dateFilter === item ? 'bg-slate-900 text-white shadow-lg' : 'text-slate-500 hover:bg-slate-50'}`}
+                      key={item.id} 
+                      onClick={() => setDateFilter(item.id as DateFilter)} 
+                      className={`w-full text-left px-5 py-3 rounded-xl text-sm transition-all font-bold ${dateFilter === item.id ? 'bg-slate-900 text-white shadow-lg' : 'text-slate-500 hover:bg-slate-50'}`}
                     >
-                      {item === 'all' ? '全部时间' : item === 'today' ? '今日新增' : item === 'week' ? '本周记录' : '本月记录'}
+                      {item.label}
                     </button>
                   ))}
                 </div>
               </div>
-            </aside>
 
-            <main className="md:col-span-3 space-y-10">
-              <div className="relative group">
-                <SearchIcon className="absolute left-8 top-1/2 -translate-y-1/2 w-8 h-8 text-slate-300 group-focus-within:text-indigo-500 transition-colors" />
-                <input 
-                  type="text" 
-                  placeholder="搜索题目核心关键词或公司名称..." 
-                  value={searchQuery} 
-                  onChange={(e) => setSearchQuery(e.target.value)} 
-                  className="w-full pl-20 pr-10 py-8 bg-white border-none rounded-[3rem] shadow-xl outline-none text-2xl font-black focus:ring-8 focus:ring-indigo-50 transition-all placeholder:text-slate-200" 
-                />
+              {/* 数据中心 */}
+              <div className="bg-white p-8 rounded-[2rem] border border-slate-200 shadow-sm">
+                <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-6">数据中心</h3>
+                <div className="grid grid-cols-2 gap-3">
+                  <button onClick={exportQuestions} className="flex flex-col items-center justify-center gap-2 p-4 bg-slate-50 hover:bg-indigo-50 text-slate-500 hover:text-indigo-600 rounded-2xl transition-all border border-slate-100"><DownloadIcon className="w-5 h-5" /><span className="text-[9px] font-black uppercase">导出</span></button>
+                  <button onClick={() => fileInputRef.current?.click()} className="flex flex-col items-center justify-center gap-2 p-4 bg-slate-50 hover:bg-indigo-50 text-slate-500 hover:text-indigo-600 rounded-2xl transition-all border border-slate-100"><UploadIcon className="w-5 h-5" /><span className="text-[9px] font-black uppercase">导入</span></button>
+                  <input type="file" ref={fileInputRef} onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if(!file) return;
+                    const reader = new FileReader();
+                    reader.onload = async (ev) => { try { await importQuestions(JSON.parse(ev.target?.result as string)); refreshAll(); } catch(err){alert("格式错误");}};
+                    reader.readAsText(file);
+                  }} accept=".json" className="hidden" />
+                </div>
               </div>
+            </div>
 
-              <div className="grid grid-cols-1 gap-8">
+            <div className="md:col-span-3 space-y-8">
+              <div className="relative">
+                <SearchIcon className="absolute left-7 top-1/2 -translate-y-1/2 w-7 h-7 text-slate-300" />
+                <input type="text" placeholder="搜索题目内容、公司标签..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} className="w-full pl-16 pr-8 py-6 bg-white border-none rounded-[2.5rem] shadow-xl outline-none text-2xl font-bold focus:ring-8 focus:ring-indigo-50 transition-all" />
+              </div>
+              <div className="grid grid-cols-1 gap-6">
                 {filteredQuestions.length === 0 ? (
-                  <div className="text-center py-32 bg-white rounded-[3rem] border-2 border-dashed border-slate-100">
-                    <p className="text-slate-300 font-black uppercase tracking-[0.2em] text-sm">暂无匹配的面试题目</p>
-                  </div>
+                  <div className="text-center py-20 bg-white rounded-[2.5rem] border border-dashed border-slate-200"><p className="text-slate-400 font-bold uppercase tracking-widest text-sm">暂无匹配题目</p></div>
                 ) : (
                   filteredQuestions.map(q => (
-                    <div 
-                      key={q.id} 
-                      onClick={() => handleViewDetail(q)} 
-                      className="group bg-white p-12 rounded-[3rem] border border-slate-200 shadow-sm hover:shadow-2xl transition-all cursor-pointer relative overflow-hidden"
-                    >
-                      <div className={`absolute left-0 top-0 bottom-0 w-2.5 ${getCategoryColor(q.category).split(' ')[1]}`} />
-                      <div className="flex justify-between items-start mb-8">
-                        <span className={`text-[10px] font-black px-5 py-2.5 rounded-full uppercase border ${getCategoryColor(q.category)} shadow-sm`}>{q.category}</span>
-                        <div className="flex gap-3 opacity-0 group-hover:opacity-100 transition-all">
-                          <button onClick={(e) => { e.stopPropagation(); handleEdit(q); }} className="p-3.5 bg-slate-50 hover:bg-indigo-600 text-slate-400 hover:text-white rounded-2xl transition-all shadow-sm"><PencilIcon /></button>
-                          <button onClick={(e) => { e.stopPropagation(); deleteQuestion(q.id).then(refreshAll); }} className="p-3.5 bg-slate-50 hover:bg-red-600 text-slate-400 hover:text-white rounded-2xl transition-all shadow-sm"><TrashIcon /></button>
+                    <div key={q.id} onClick={() => handleViewDetail(q)} className="group bg-white p-10 rounded-[2.5rem] border border-slate-200 shadow-sm hover:shadow-2xl transition-all cursor-pointer relative overflow-hidden">
+                      <div className={`absolute left-0 top-0 bottom-0 w-2 ${getCategoryColor(q.category).split(' ')[1] || 'bg-indigo-600'}`} />
+                      <div className="flex justify-between items-start mb-6">
+                        <span className={`text-[9px] font-black px-4 py-2 rounded-full uppercase border ${getCategoryColor(q.category)}`}>{q.category}</span>
+                        <div className="flex gap-2 opacity-0 group-hover:opacity-100 transition-all">
+                          <button onClick={(e) => { e.stopPropagation(); handleEdit(q); }} className="p-3 bg-slate-50 hover:bg-indigo-600 text-slate-400 hover:text-white rounded-xl transition-all"><PencilIcon /></button>
+                          <button onClick={(e) => handleDelete(q.id, e)} className="p-3 bg-slate-50 hover:bg-red-600 text-slate-400 hover:text-white rounded-xl transition-all"><TrashIcon /></button>
                         </div>
                       </div>
-                      <h3 className="text-3xl font-black text-slate-800 line-clamp-2 mb-8 leading-tight tracking-tight">{q.text}</h3>
-                      <div className="flex items-center gap-10 text-[11px] font-black text-slate-300 uppercase tracking-widest">
-                        {q.companyTag && <span className="bg-slate-50 text-indigo-500 px-5 py-2.5 rounded-xl border border-slate-100">{q.companyTag}</span>}
+                      <h3 className="text-3xl font-black text-slate-800 line-clamp-2 mb-6 leading-tight">{q.text}</h3>
+                      <div className="flex items-center gap-8 text-[11px] font-black text-slate-300 uppercase tracking-widest">
+                        {q.companyTag && <span className="bg-slate-50 text-indigo-500 px-4 py-2 rounded-xl border border-slate-100">{q.companyTag}</span>}
                         <span>{formatDate(q.updatedAt)}</span>
-                        {q.isAiGenerated && <span className="text-indigo-600 font-black flex items-center gap-2"><SparklesIcon className="w-4 h-4" /> AI ENHANCED</span>}
-                        {q.drawing && <span className="text-rose-400 font-black flex items-center gap-2"><PencilIcon className="w-4 h-4" /> HANDWRITTEN</span>}
+                        {q.isAiGenerated && <span className="text-indigo-600 font-black flex items-center gap-1"><SparklesIcon className="w-3 h-3" /> AI 联网增强</span>}
                       </div>
                     </div>
                   ))
                 )}
               </div>
-            </main>
+            </div>
           </div>
         )}
 
         {(view === AppView.FORM) && (
           <div className="w-full">
-            <button onClick={() => setView(AppView.LIST)} className="flex items-center gap-3 text-slate-400 hover:text-indigo-600 font-black text-sm uppercase mb-10 transition-all active:scale-95"><ChevronLeftIcon /> 返回题库列表</button>
-            <div className="flex items-stretch gap-0 h-[82vh] relative">
-              <div className="flex-1 min-w-0 pr-12 overflow-y-auto no-scrollbar pb-32">
-                <div className="bg-white p-16 rounded-[4.5rem] border border-slate-200 shadow-2xl space-y-16">
-                  <div className="space-y-4">
-                    <label className="text-[11px] font-black text-slate-400 uppercase tracking-widest px-4">面试题目</label>
-                    <textarea 
-                      value={formData.text} 
-                      onChange={(e) => setFormData({...formData, text: e.target.value})} 
-                      placeholder="请粘贴或输入面试题目..." 
-                      className="w-full px-12 py-10 bg-slate-50 border-none rounded-[3.5rem] min-h-[140px] outline-none text-4xl font-black focus:bg-white focus:ring-[14px] focus:ring-indigo-50 transition-all shadow-inner" 
-                    />
-                  </div>
-
+            <button onClick={() => setView(AppView.LIST)} className="flex items-center gap-3 text-slate-400 hover:text-indigo-600 font-black text-sm uppercase mb-10 transition-all"><ChevronLeftIcon /> 返回列表</button>
+            <div className="flex items-stretch gap-0 h-[80vh] relative">
+              <div className="flex-1 min-w-0 pr-10 overflow-y-auto no-scrollbar pb-20">
+                <div className="bg-white p-14 rounded-[4rem] border border-slate-200 shadow-xl space-y-12">
+                  <textarea value={formData.text} onChange={(e) => setFormData({...formData, text: e.target.value})} placeholder="输入面试题目内容..." className="w-full px-10 py-8 bg-slate-50 border-none rounded-[3rem] min-h-[160px] outline-none text-4xl font-black focus:bg-white focus:ring-[12px] focus:ring-indigo-50 transition-all" />
                   <div className="grid grid-cols-2 gap-12">
-                    <div className="space-y-4">
-                      <label className="text-[11px] font-black text-slate-400 uppercase tracking-widest px-4">题目分类</label>
-                      <select value={formData.category} onChange={(e) => setFormData({...formData, category: e.target.value})} className="w-full px-12 py-7 bg-slate-50 rounded-[2.5rem] outline-none font-black appearance-none focus:ring-4 focus:ring-indigo-50 transition-all shadow-inner border-none">
-                        {categories.map(c => <option key={c} value={c}>{c}</option>)}
-                      </select>
-                    </div>
-                    <div className="space-y-4">
-                      <label className="text-[11px] font-black text-slate-400 uppercase tracking-widest px-4">面试公司</label>
-                      <input type="text" value={formData.companyTag} onChange={(e) => setFormData({...formData, companyTag: e.target.value})} placeholder="例如: Google, ByteDance..." className="w-full px-12 py-7 bg-slate-50 rounded-[2.5rem] outline-none font-black focus:bg-white transition-all shadow-inner border-none" />
-                    </div>
+                    <select value={formData.category} onChange={(e) => setFormData({...formData, category: e.target.value})} className="w-full px-10 py-6 bg-slate-50 rounded-[2rem] outline-none font-black appearance-none focus:ring-4 focus:ring-indigo-50 transition-all">
+                      {categories.map(c => <option key={c} value={c}>{c}</option>)}
+                    </select>
+                    <input type="text" value={formData.companyTag} onChange={(e) => setFormData({...formData, companyTag: e.target.value})} placeholder="公司标签..." className="w-full px-10 py-6 bg-slate-50 rounded-[2rem] outline-none font-black focus:bg-white transition-all" />
                   </div>
-
-                  <div className="space-y-8">
-                    <div className="flex justify-between items-end px-4">
-                      <div className="space-y-3">
-                        <label className="text-[11px] font-black text-slate-400 uppercase tracking-widest block">详解内容</label>
-                        <div className="flex gap-4">
-                          <button onClick={() => setEditMode('text')} className={`text-[10px] font-black uppercase px-6 py-3 rounded-xl border-2 transition-all ${editMode === 'text' ? 'bg-slate-900 text-white border-slate-900 shadow-lg' : 'bg-white text-slate-400 border-slate-100 hover:border-indigo-100'}`}>文本推导</button>
-                          <button onClick={() => setEditMode('drawing')} className={`text-[10px] font-black uppercase px-6 py-3 rounded-xl border-2 transition-all ${editMode === 'drawing' ? 'bg-indigo-600 text-white border-indigo-600 shadow-lg' : 'bg-white text-slate-400 border-slate-100 hover:border-indigo-100'}`}>手写过程</button>
-                        </div>
+                  <div className="space-y-5">
+                    <div className="flex justify-between items-center mb-2 px-4">
+                      <div className="flex flex-col">
+                        <label className="text-[11px] font-black text-slate-400 uppercase tracking-widest">记录答案 / 推导过程</label>
+                        <span className="text-[10px] text-slate-300 font-bold uppercase mt-1">支持手写录入 & LaTeX 公式</span>
                       </div>
-                      <button 
-                        onClick={handleGenerateAnswer} 
-                        disabled={isGenerating || !formData.text.trim()} 
-                        className="flex items-center gap-3 text-xs font-black text-white bg-indigo-600 px-10 py-5 rounded-[1.5rem] shadow-2xl hover:scale-105 transition-all disabled:opacity-40 relative group overflow-hidden"
-                      >
-                        <span className="relative z-10 flex items-center gap-2">
-                          {isGenerating ? <div className="w-4 h-4 border-2 border-white border-t-transparent animate-spin rounded-full" /> : <SparklesIcon className="w-5 h-5" />}
-                          {isGenerating ? 'AI 推演中' : '联网生成详解'}
-                        </span>
-                        {isGenerating && <div className="absolute inset-0 bg-indigo-500 animate-pulse" />}
+                      <button onClick={handleGenerateAnswer} disabled={isGenerating || !formData.text.trim()} className="flex items-center gap-3 text-xs font-black text-white bg-indigo-600 px-8 py-4 rounded-2xl shadow-xl hover:scale-105 transition-all disabled:opacity-40">
+                        {isGenerating ? '正在联网推演...' : <><SparklesIcon className="w-5 h-5" /> 联网 AI 生成步骤</>}
                       </button>
                     </div>
-
-                    {isGenerating && genStatus.length > 0 && (
-                      <div className="mx-4 p-8 bg-indigo-50/50 rounded-[2rem] border border-indigo-100 space-y-3 animate-in fade-in slide-in-from-top-4 duration-500">
-                        {genStatus.map((status, i) => (
-                          <div key={i} className="flex items-center gap-3 text-xs font-black text-indigo-600 animate-in fade-in slide-in-from-left-2" style={{ animationDelay: `${i * 200}ms` }}>
-                             {i === genStatus.length - 1 ? <div className="w-1.5 h-1.5 rounded-full bg-indigo-600 animate-ping" /> : <CheckIcon className="w-3 h-3" />}
-                             {status}
-                          </div>
-                        ))}
+                    {/* 模拟手写笔记区域 */}
+                    <div className="relative group">
+                      <textarea value={formData.answer} onChange={(e) => setFormData({...formData, answer: e.target.value})} placeholder="在此手动记录解析，公式用 $ 包裹..." className="w-full px-12 py-12 bg-slate-50 rounded-[3.5rem] min-h-[500px] outline-none font-medium text-xl leading-relaxed text-slate-700 focus:bg-white transition-all border-2 border-transparent focus:border-indigo-100" />
+                      <div className="absolute top-4 right-8 opacity-20 group-hover:opacity-100 transition-opacity">
+                        <PencilIcon className="w-8 h-8 text-slate-400" />
                       </div>
-                    )}
-                    
-                    {editMode === 'text' ? (
-                      <textarea 
-                        value={formData.answer} 
-                        onChange={(e) => setFormData({...formData, answer: e.target.value})} 
-                        placeholder="在此手动记录题目解析，LaTeX 公式请用 $ 包裹..." 
-                        className="w-full px-12 py-12 bg-slate-50 rounded-[3.5rem] min-h-[600px] outline-none font-medium text-xl leading-relaxed text-slate-700 focus:bg-white transition-all shadow-inner border-none" 
-                      />
-                    ) : (
-                      <HandwritingCanvas value={formData.drawing} onChange={(data) => setFormData({...formData, drawing: data})} />
-                    )}
+                    </div>
                   </div>
-
-                  <div className="flex justify-end gap-6 pt-10">
-                    <button onClick={() => setView(AppView.LIST)} className="px-12 py-6 border-2 border-slate-100 rounded-[2rem] font-black uppercase text-slate-400 hover:bg-slate-50 transition-all text-sm">取消</button>
-                    <button onClick={handleSave} className="px-20 py-6 bg-slate-900 text-white rounded-[2.2rem] font-black shadow-2xl hover:bg-indigo-600 transition-all active:scale-95 text-sm">确认并保存</button>
+                  {formData.sources && formData.sources.length > 0 && <SourceList sources={formData.sources} />}
+                  <div className="flex justify-end gap-5">
+                    <button onClick={() => setView(AppView.LIST)} className="px-14 py-6 border border-slate-100 rounded-[2rem] font-black uppercase text-slate-400 hover:bg-slate-50 transition-all">取消</button>
+                    <button onClick={handleSave} className="px-20 py-6 bg-slate-900 text-white rounded-[2.2rem] font-black shadow-2xl hover:bg-indigo-600 transition-all active:scale-95">确认保存</button>
                   </div>
                 </div>
               </div>
               
-              <div 
-                className="group w-8 -mx-4 cursor-col-resize z-30 flex items-center justify-center" 
-                onMouseDown={(e) => { e.preventDefault(); setIsDragging(true); dragStartX.current = e.clientX; initialWidth.current = sidebarWidth; }}
-              >
-                <div className={`w-1.5 h-32 rounded-full transition-all ${isDragging ? 'bg-indigo-600 h-64' : 'bg-slate-200 group-hover:bg-indigo-400'}`} />
+              {/* Sidebar Dragger */}
+              <div className="group w-8 -mx-4 cursor-col-resize z-30 flex items-center justify-center" onMouseDown={(e) => { e.preventDefault(); setIsDragging(true); dragStartX.current = e.clientX; initialWidth.current = sidebarWidth; }}>
+                <div className={`w-1.5 h-32 rounded-full transition-all ${isDragging ? 'bg-indigo-600 h-64' : 'bg-slate-300 group-hover:bg-indigo-500'}`} />
               </div>
 
-              <div 
-                className={`bg-white rounded-[4.5rem] border border-slate-200 shadow-2xl flex flex-col overflow-hidden shrink-0 transition-[width] duration-500 relative`} 
-                style={{ width: isSidebarExpanded ? '90%' : `${sidebarWidth}px` }}
-              >
-                <div className="p-10 border-b flex items-center justify-between bg-white/70 backdrop-blur-xl sticky top-0 z-20">
-                  <div className="flex items-center gap-4">
-                    <SparklesIcon className="text-indigo-600 w-7 h-7" /> 
-                    <h3 className="font-black text-slate-800 text-2xl tracking-tight">AI 对话助手</h3>
+              {/* AI Assistant Sidebar */}
+              <div className={`bg-white rounded-[4rem] border border-slate-200 shadow-2xl flex flex-col overflow-hidden shrink-0 transition-[width] duration-300 relative`} style={{ width: isSidebarExpanded ? '90%' : `${sidebarWidth}px` }}>
+                <div className="p-10 border-b flex items-center justify-between bg-white/50 backdrop-blur-md">
+                  <div className="flex items-center gap-3">
+                    <SparklesIcon className="text-indigo-600" /> 
+                    <h3 className="font-black text-slate-800 text-xl tracking-tight">AI 联网对话助手</h3>
                   </div>
-                  <button onClick={() => setIsSidebarExpanded(!isSidebarExpanded)} className="text-slate-300 hover:text-indigo-600 transition-all p-2 rounded-xl hover:bg-slate-50">
+                  <button onClick={() => setIsSidebarExpanded(!isSidebarExpanded)} className="text-slate-300 hover:text-indigo-600 transition-all">
                     {isSidebarExpanded ? <ChevronLeftIcon className="rotate-180" /> : <PlusIcon className="rotate-45" />}
                   </button>
                 </div>
-                
-                <div className="flex-1 overflow-y-auto p-12 space-y-12 bg-slate-50/10 no-scrollbar pb-40">
+                <div className="flex-1 overflow-y-auto p-12 space-y-10 bg-slate-50/20 no-scrollbar pb-32">
                   {chatHistory.length === 0 && (
-                    <div className="text-center py-32 opacity-20 flex flex-col items-center">
-                       <SearchIcon className="w-20 h-20 mb-8 text-slate-200" />
-                       <p className="font-black text-base uppercase tracking-widest text-slate-400">在此针对解析细节进行深度追问</p>
-                       <p className="text-xs font-bold text-slate-300 mt-2">支持联网实时检索技术文档及最新方案</p>
+                    <div className="text-center py-24 opacity-30 flex flex-col items-center">
+                       <SearchIcon className="w-16 h-16 mb-6 text-slate-300" />
+                       <p className="font-black text-sm uppercase tracking-widest text-slate-500">在此针对细节进行追问 (支持联网检索)</p>
                     </div>
                   )}
                   {chatHistory.map((msg, i) => (
                     <div key={i} className={`flex flex-col ${msg.role === 'user' ? 'items-end' : 'items-start'}`}>
-                      <div className={`max-w-[92%] shadow-lg ${msg.role === 'user' ? 'bg-indigo-600 text-white rounded-[2.5rem] rounded-tr-none' : 'bg-white border border-slate-100 text-slate-800 rounded-[3rem] rounded-tl-none'} px-10 py-9`}>
-                        <MathContent content={msg.text} className={`text-xl leading-[1.7] ${msg.role === 'model' ? 'font-medium' : 'font-bold'}`} />
-                        {msg.sources && <SourceList sources={msg.sources} />}
+                      <div className={`max-w-[96%] shadow-sm ${msg.role === 'user' ? 'bg-indigo-600 text-white rounded-[2.2rem] rounded-tr-none' : 'bg-white border border-slate-100 text-slate-800 rounded-[2.8rem] rounded-tl-none'} px-10 py-8`}>
+                        <MathContent content={msg.text} className={`text-lg leading-[1.6] ${msg.role === 'model' ? 'font-medium' : 'font-bold'}`} />
+                        {msg.sources && msg.sources.length > 0 && <SourceList sources={msg.sources} />}
                       </div>
                     </div>
                   ))}
                   {isChatLoading && (
                     <div className="flex justify-start">
-                      <div className="bg-white border border-slate-100 px-10 py-6 rounded-[2.5rem] text-sm font-black text-slate-400 animate-pulse flex items-center gap-3">
-                        <div className="w-2 h-2 bg-indigo-500 rounded-full animate-bounce" />
-                        AI 联网思考中...
-                      </div>
+                      <div className="bg-white border border-slate-100 px-8 py-4 rounded-[2rem] text-xs font-black text-slate-400 animate-pulse uppercase flex items-center gap-2"><SparklesIcon className="w-3 h-3" /> 联网推演原理中...</div>
                     </div>
                   )}
                   <div ref={chatEndRef} />
                 </div>
-
-                <div className="absolute bottom-0 left-0 right-0 p-10 bg-white/80 backdrop-blur-xl border-t border-slate-100">
-                  <div className="flex gap-6 items-center">
-                    <input 
-                      type="text" 
-                      value={chatInput} 
-                      onChange={(e) => setChatInput(e.target.value)} 
-                      onKeyDown={(e) => e.key === 'Enter' && handleChatSend()} 
-                      placeholder="询问原理、边界情况 or 实际案例..." 
-                      className="flex-1 bg-slate-100 border-none rounded-[2rem] px-10 py-7 text-xl outline-none font-bold focus:bg-white transition-all shadow-inner focus:ring-4 focus:ring-indigo-50" 
-                    />
-                    <button 
-                      onClick={handleChatSend} 
-                      disabled={isChatLoading || !chatInput.trim()} 
-                      className="bg-slate-900 text-white p-7 rounded-[2rem] shadow-xl hover:bg-indigo-600 transition-all disabled:opacity-30 active:scale-90"
-                    >
-                      <PlusIcon className="w-7 h-7" />
-                    </button>
+                <div className="absolute bottom-0 left-0 right-0 p-10 bg-white/80 backdrop-blur-md border-t">
+                  <div className="flex gap-5">
+                    <input type="text" value={chatInput} onChange={(e) => setChatInput(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleChatSend()} placeholder="追问详细推导或背景..." className="flex-1 bg-slate-100 border-none rounded-[1.8rem] px-10 py-6 text-lg outline-none font-bold focus:bg-white transition-all shadow-inner" />
+                    <button onClick={handleChatSend} disabled={isChatLoading || !chatInput.trim()} className="bg-slate-900 text-white p-6 rounded-[1.8rem] shadow-xl hover:bg-indigo-600 transition-all disabled:opacity-30"><PlusIcon /></button>
                   </div>
                 </div>
               </div>
@@ -696,34 +462,23 @@ const App: React.FC = () => {
         )}
 
         {view === AppView.DETAIL && currentQuestion && (
-          <div className="max-w-6xl mx-auto pb-32">
-            <button onClick={() => setView(AppView.LIST)} className="flex items-center gap-3 text-slate-400 hover:text-indigo-600 mb-12 font-black uppercase text-sm tracking-widest transition-all"><ChevronLeftIcon /> 返回题库列表</button>
-            <article className="bg-white p-20 rounded-[5rem] border border-slate-200 shadow-2xl space-y-16">
-              <span className={`text-[11px] font-black px-7 py-3 rounded-full uppercase border ${getCategoryColor(currentQuestion.category)} shadow-sm`}>{currentQuestion.category}</span>
-              <h2 className="text-6xl font-black text-slate-900 leading-[1.15] tracking-tight">{currentQuestion.text}</h2>
-              <div className="flex flex-wrap gap-10 text-[12px] font-black text-slate-300 uppercase pb-16 border-b border-slate-100">
-                {currentQuestion.companyTag && <div className="flex items-center gap-4 bg-slate-50 text-indigo-600 px-8 py-4 rounded-2xl border"><BuildingIcon />{currentQuestion.companyTag}</div>}
-                <div className="flex items-center gap-4"><CalendarIcon /> 最后更新: {formatDate(currentQuestion.updatedAt)}</div>
-                {currentQuestion.isAiGenerated && <div className="text-indigo-600 font-black flex items-center gap-2"><SparklesIcon className="w-4 h-4" /> 联网 AI 辅助解析</div>}
+          <div className="max-w-6xl mx-auto">
+            <button onClick={() => setView(AppView.LIST)} className="flex items-center gap-3 text-slate-400 hover:text-indigo-600 mb-10 font-black uppercase text-sm tracking-widest transition-all"><ChevronLeftIcon /> 返回列表</button>
+            <article className="bg-white p-20 rounded-[4.5rem] border border-slate-200 shadow-2xl space-y-14">
+              <span className={`text-[10px] font-black px-6 py-3 rounded-full uppercase border ${getCategoryColor(currentQuestion.category)}`}>{currentQuestion.category}</span>
+              <h2 className="text-6xl font-black text-slate-900 leading-tight tracking-tighter">{currentQuestion.text}</h2>
+              <div className="flex gap-10 text-[11px] font-black text-slate-300 uppercase pb-14 border-b">
+                {currentQuestion.companyTag && <div className="flex items-center gap-3 bg-slate-50 text-indigo-600 px-8 py-4 rounded-2xl border"><BuildingIcon />{currentQuestion.companyTag}</div>}
+                <div className="flex items-center gap-3"><CalendarIcon /> 更新于 {formatDate(currentQuestion.updatedAt)}</div>
+                {currentQuestion.isAiGenerated && <div className="text-indigo-600 font-black">联网 AI 辅助解析</div>}
               </div>
-              <div className="pt-8 space-y-16">
-                {currentQuestion.answer && (
-                  <div className="bg-slate-50/30 p-16 rounded-[4rem] border border-slate-100">
-                    <MathContent content={currentQuestion.answer} className="text-slate-700 text-[1.75rem] font-medium leading-relaxed" />
-                  </div>
-                )}
-                {currentQuestion.drawing && (
-                  <div className="bg-white p-12 rounded-[4rem] border border-slate-200 shadow-xl overflow-hidden">
-                    <h4 className="text-[11px] font-black text-slate-300 uppercase tracking-[0.3em] mb-10 text-center">手写推导笔记</h4>
-                    <img src={currentQuestion.drawing} alt="Handwritten Note" className="w-full h-auto rounded-3xl shadow-sm" />
-                  </div>
-                )}
-                {!currentQuestion.answer && !currentQuestion.drawing && <p className="text-slate-300 font-black text-center py-24 text-xl uppercase tracking-widest opacity-30">暂未记录任何解析内容</p>}
+              <div className="pt-6">
+                <MathContent content={currentQuestion.answer || "暂无记录解析内容。"} className="text-slate-700 bg-slate-50/40 p-16 rounded-[4rem] text-[1.6rem] font-medium leading-relaxed" />
               </div>
               {currentQuestion.sources && <SourceList sources={currentQuestion.sources} />}
-              <div className="flex justify-end gap-6 pt-12">
-                <button onClick={() => handleEdit(currentQuestion)} className="flex items-center gap-3 px-10 py-5 bg-indigo-600 text-white rounded-[1.5rem] font-black text-sm shadow-xl hover:bg-indigo-700 transition-all active:scale-95"><PencilIcon className="w-5 h-5" /> 编辑题目</button>
-                <button onClick={() => deleteQuestion(currentQuestion.id).then(() => setView(AppView.LIST))} className="flex items-center gap-3 px-10 py-5 border-2 border-red-50 text-red-500 rounded-[1.5rem] font-black text-sm hover:bg-red-50 transition-all"><TrashIcon className="w-5 h-5" /> 永久删除</button>
+              <div className="flex justify-end gap-5 pt-10">
+                <button onClick={() => handleEdit(currentQuestion)} className="flex items-center gap-2 px-8 py-4 bg-indigo-600 text-white rounded-2xl font-black text-sm shadow-xl hover:bg-indigo-700 transition-all"><PencilIcon className="w-4 h-4" /> 编辑题目</button>
+                <button onClick={() => handleDelete(currentQuestion.id)} className="flex items-center gap-2 px-8 py-4 border border-red-100 text-red-500 rounded-2xl font-black text-sm hover:bg-red-50 transition-all"><TrashIcon className="w-4 h-4" /> 删除题目</button>
               </div>
             </article>
           </div>

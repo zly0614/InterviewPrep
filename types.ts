@@ -10,7 +10,6 @@ export interface Question {
   id: string;
   text: string;
   answer: string;
-  drawing?: string; // Base64 string for handwritten notes
   category: string;
   companyTag: string;
   createdAt: number;
