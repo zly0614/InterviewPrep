@@ -4,7 +4,8 @@ import react from '@vitejs/plugin-react';
 
 export default defineConfig(({ mode }) => {
   // 加载当前模式下的环境变量（.env, .env.local 等）
-  const env = loadEnv(mode, process.cwd(), '');
+  // Use a type cast to any to satisfy the TypeScript compiler for Node.js process methods in this context.
+  const env = loadEnv(mode, (process as any).cwd(), '');
   
   return {
     plugins: [react()],
